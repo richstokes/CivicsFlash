@@ -28,6 +28,38 @@ struct Card: Identifiable, Hashable {
   let answers: [String]
 }
 
+// MARK: - Settings / Overrides
+struct SettingsManager {
+  static let governorKey = "setting_governor"
+  static let capitalKey = "setting_capital"
+  static let senatorKey = "setting_senator"
+  static let representativeKey = "setting_representative"
+  static let overrideIDs: Set<Int> = [23, 29, 61, 62]
+  static let defaultVaryMessage = "Answers will vary by location. Please add via settings."
+
+  static func currentOverrides() -> [Int: String] {
+    let defaults = UserDefaults.standard
+    var map: [Int: String] = [:]
+    if let s = defaults.string(forKey: senatorKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { map[23] = s }
+    if let r = defaults.string(forKey: representativeKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !r.isEmpty { map[29] = r }
+    if let g = defaults.string(forKey: governorKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !g.isEmpty { map[61] = g }
+    if let c = defaults.string(forKey: capitalKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty { map[62] = c }
+    return map
+  }
+
+  static func value(for id: Int) -> String? {
+    return currentOverrides()[id]
+  }
+
+  static func save(governor: String, capital: String, senator: String, representative: String) {
+    let d = UserDefaults.standard
+    d.set(governor, forKey: governorKey)
+    d.set(capital, forKey: capitalKey)
+    d.set(senator, forKey: senatorKey)
+    d.set(representative, forKey: representativeKey)
+  }
+}
+
 enum DataLoader {
   static func loadCards() -> [Card] {
     guard let url = Bundle.main.url(forResource: "questions", withExtension: "json") else {
@@ -37,11 +69,24 @@ enum DataLoader {
     do {
       let data = try Data(contentsOf: url)
       let decoded = try JSONDecoder().decode(QuestionBank.self, from: data)
-      return decoded.categories.flatMap { cat in
+      let flat = decoded.categories.flatMap { cat in
         cat.questions.map { q in
           Card(id: q.id, category: cat.name, question: q.question, answers: q.answers)
         }
       }
+      // Apply settings overrides for certain question IDs
+      let overrides = SettingsManager.currentOverrides()
+      let adjusted = flat.map { card -> Card in
+        if SettingsManager.overrideIDs.contains(card.id) {
+          if let v = overrides[card.id], !v.isEmpty {
+            return Card(id: card.id, category: card.category, question: card.question, answers: [v])
+          } else {
+            return Card(id: card.id, category: card.category, question: card.question, answers: [SettingsManager.defaultVaryMessage])
+          }
+        }
+        return card
+      }
+      return adjusted
     } catch {
       print("❌ Error loading questions: \(error)")
       return []
@@ -167,6 +212,8 @@ struct ContentView: View {
   @State private var dragOffset: CGSize = .zero
   private let swipeThreshold: CGFloat = 80
 
+  @State private var showSettings = false
+
   var body: some View {
     ZStack {
       LinearGradient(
@@ -187,6 +234,11 @@ struct ContentView: View {
       if vm.deckComplete {
         completionOverlay
           .transition(.opacity.combined(with: .scale))
+      }
+    }
+    .sheet(isPresented: $showSettings) {
+      SettingsView {
+        vm.reload() // re-read overrides and rebuild deck
       }
     }
   }
@@ -210,10 +262,21 @@ struct ContentView: View {
         }
       }
       Spacer()
-      Button(vm.deckComplete ? "Start Again" : "Reset") { vm.resetDeck() }
-        .buttonStyle(.borderedProminent)
+      HStack(spacing: 8) {
+        Button(vm.deckComplete ? "Start Again" : "Reset") { vm.resetDeck() }
+          .buttonStyle(.borderedProminent)
+          .tint(.white)
+          .foregroundStyle(.black)
+        Button {
+          showSettings = true
+        } label: {
+          Image(systemName: "gearshape.fill")
+            .imageScale(.large)
+            .padding(10)
+        }
+        .buttonStyle(.bordered)
         .tint(.white)
-        .foregroundStyle(.black)
+      }
     }
   }
 
@@ -345,6 +408,55 @@ struct ContentView: View {
     .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
     .shadow(color: .black.opacity(0.25), radius: 20, x: 0, y: 12)
     .padding()
+  }
+}
+
+// MARK: - Settings UI
+struct SettingsView: View {
+  var onSaved: () -> Void
+  @Environment(\.dismiss) private var dismiss
+  @State private var governor: String = UserDefaults.standard.string(forKey: SettingsManager.governorKey) ?? ""
+  @State private var capital: String = UserDefaults.standard.string(forKey: SettingsManager.capitalKey) ?? ""
+  @State private var senator: String = UserDefaults.standard.string(forKey: SettingsManager.senatorKey) ?? ""
+  @State private var representative: String = UserDefaults.standard.string(forKey: SettingsManager.representativeKey) ?? ""
+
+  var body: some View {
+    NavigationStack {
+      Form {
+        Section("State leadership") {
+          TextField("Governor", text: $governor)
+            .textContentType(.name)
+          TextField("One U.S. Senator", text: $senator)
+            .textContentType(.name)
+        }
+        Section("State details") {
+          TextField("State capital", text: $capital)
+          TextField("U.S. Representative", text: $representative)
+            .textContentType(.name)
+        }
+        Section(footer: Text("Only these answers are customized. All other questions use the built-in answers.")) { EmptyView() }
+      }
+      .navigationTitle("Settings")
+      .toolbar {
+        ToolbarItem(placement: .cancellationAction) {
+          Button("Cancel") { dismiss() }
+        }
+        ToolbarItem(placement: .confirmationAction) {
+          Button("Save") { saveAndClose() }.bold()
+        }
+      }
+    }
+  }
+
+  private func saveAndClose() {
+    SettingsManager.save(
+      governor: governor.trimmingCharacters(in: .whitespacesAndNewlines),
+      capital: capital.trimmingCharacters(in: .whitespacesAndNewlines),
+      senator: senator.trimmingCharacters(in: .whitespacesAndNewlines),
+      representative: representative.trimmingCharacters(in: .whitespacesAndNewlines)
+    )
+    onSaved()
+    dismiss()
   }
 }
 
