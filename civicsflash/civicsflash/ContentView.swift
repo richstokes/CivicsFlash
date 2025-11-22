@@ -40,10 +40,26 @@ struct SettingsManager {
   static func currentOverrides() -> [Int: String] {
     let defaults = UserDefaults.standard
     var map: [Int: String] = [:]
-    if let s = defaults.string(forKey: senatorKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !s.isEmpty { map[23] = s }
-    if let r = defaults.string(forKey: representativeKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !r.isEmpty { map[29] = r }
-    if let g = defaults.string(forKey: governorKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !g.isEmpty { map[61] = g }
-    if let c = defaults.string(forKey: capitalKey)?.trimmingCharacters(in: .whitespacesAndNewlines), !c.isEmpty { map[62] = c }
+    if let s = defaults.string(forKey: senatorKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !s.isEmpty
+    {
+      map[23] = s
+    }
+    if let r = defaults.string(forKey: representativeKey)?.trimmingCharacters(
+      in: .whitespacesAndNewlines), !r.isEmpty
+    {
+      map[29] = r
+    }
+    if let g = defaults.string(forKey: governorKey)?.trimmingCharacters(
+      in: .whitespacesAndNewlines), !g.isEmpty
+    {
+      map[61] = g
+    }
+    if let c = defaults.string(forKey: capitalKey)?.trimmingCharacters(in: .whitespacesAndNewlines),
+      !c.isEmpty
+    {
+      map[62] = c
+    }
     return map
   }
 
@@ -81,7 +97,9 @@ enum DataLoader {
           if let v = overrides[card.id], !v.isEmpty {
             return Card(id: card.id, category: card.category, question: card.question, answers: [v])
           } else {
-            return Card(id: card.id, category: card.category, question: card.question, answers: [SettingsManager.defaultVaryMessage])
+            return Card(
+              id: card.id, category: card.category, question: card.question,
+              answers: [SettingsManager.defaultVaryMessage])
           }
         }
         return card
@@ -238,7 +256,7 @@ struct ContentView: View {
     }
     .sheet(isPresented: $showSettings) {
       SettingsView {
-        vm.reload() // re-read overrides and rebuild deck
+        vm.reload()  // re-read overrides and rebuild deck
       }
     }
   }
@@ -415,10 +433,14 @@ struct ContentView: View {
 struct SettingsView: View {
   var onSaved: () -> Void
   @Environment(\.dismiss) private var dismiss
-  @State private var governor: String = UserDefaults.standard.string(forKey: SettingsManager.governorKey) ?? ""
-  @State private var capital: String = UserDefaults.standard.string(forKey: SettingsManager.capitalKey) ?? ""
-  @State private var senator: String = UserDefaults.standard.string(forKey: SettingsManager.senatorKey) ?? ""
-  @State private var representative: String = UserDefaults.standard.string(forKey: SettingsManager.representativeKey) ?? ""
+  @State private var governor: String =
+    UserDefaults.standard.string(forKey: SettingsManager.governorKey) ?? ""
+  @State private var capital: String =
+    UserDefaults.standard.string(forKey: SettingsManager.capitalKey) ?? ""
+  @State private var senator: String =
+    UserDefaults.standard.string(forKey: SettingsManager.senatorKey) ?? ""
+  @State private var representative: String =
+    UserDefaults.standard.string(forKey: SettingsManager.representativeKey) ?? ""
 
   var body: some View {
     NavigationStack {
@@ -434,7 +456,11 @@ struct SettingsView: View {
           TextField("U.S. Representative", text: $representative)
             .textContentType(.name)
         }
-        Section(footer: Text("Only these answers are customized. All other questions use the built-in answers.")) { EmptyView() }
+        Section(
+          footer: Text(
+            "To find your current representative, visit https://www.house.gov/representatives/find-your-representative"
+          )
+        ) { EmptyView() }
       }
       .navigationTitle("Settings")
       .toolbar {
