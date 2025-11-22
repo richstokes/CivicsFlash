@@ -60,7 +60,7 @@ final class FlashcardViewModel: ObservableObject {
   private var history: [Card] = []  // cards we've seen
   private var currentIndex: Int = -1  // position in history
 
-  let autoRevealDelay: TimeInterval = 10.0
+  let autoRevealDelay: TimeInterval = 15.0
   private var autoRevealWorkItem: DispatchWorkItem?
 
   var totalCount: Int? { allCards.isEmpty ? nil : allCards.count }
