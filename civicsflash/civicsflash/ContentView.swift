@@ -55,6 +55,7 @@ final class FlashcardViewModel: ObservableObject {
   @Published private(set) var deck: [Card] = []  // unseen, shuffled
   @Published private(set) var current: Card?
   @Published var isRevealed: Bool = false
+  @Published private(set) var transitionDirection: TransitionDirection = .forward
 
   private var history: [Card] = []  // cards we've seen
   private var currentIndex: Int = -1  // position in history
@@ -66,6 +67,10 @@ final class FlashcardViewModel: ObservableObject {
   var remainingCount: Int { deck.count + (current == nil ? 0 : 1) }
   var canGoBack: Bool { currentIndex > 0 }
   var canGoForward: Bool { currentIndex < history.count - 1 }
+
+  enum TransitionDirection {
+    case forward, backward
+  }
 
   init() { reload() }
 
@@ -84,6 +89,7 @@ final class FlashcardViewModel: ObservableObject {
   func nextCard() {
     isRevealed = false
     cancelAutoReveal()
+    transitionDirection = .forward
 
     // If we're in the middle of history, move forward in history
     if canGoForward {
@@ -118,6 +124,7 @@ final class FlashcardViewModel: ObservableObject {
     guard canGoBack else { return }
     isRevealed = false
     cancelAutoReveal()
+    transitionDirection = .backward
     currentIndex -= 1
     current = history[currentIndex]
     scheduleAutoReveal()
@@ -239,28 +246,29 @@ struct ContentView: View {
               let isSwipeRight = value.translation.width > 0
               let isSwipeLeft = value.translation.width < 0
 
-              withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
-                if shouldSwipe {
+              if shouldSwipe {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                   let direction: CGFloat = isSwipeRight ? 1 : -1
                   dragOffset = CGSize(width: direction * 600, height: 0)
-                } else {
-                  dragOffset = .zero
                 }
-              }
 
-              if shouldSwipe {
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-                  dragOffset = .zero
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
                   if isSwipeRight && vm.canGoBack {
                     vm.previousCard()
                   } else if isSwipeLeft {
                     vm.nextCard()
                   }
+                  dragOffset = .zero
+                }
+              } else {
+                withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
+                  dragOffset = .zero
                 }
               }
             }
         )
         .animation(.easeInOut, value: vm.isRevealed)
+        .id(card.id)
       } else {
         ProgressView().tint(.white)
       }
