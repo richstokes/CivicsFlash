@@ -55,6 +55,7 @@ final class FlashcardViewModel: ObservableObject {
   @Published private(set) var deck: [Card] = []  // unseen, shuffled
   @Published private(set) var current: Card?
   @Published var isRevealed: Bool = false
+  @Published var deckComplete: Bool = false
   @Published private(set) var transitionDirection: TransitionDirection = .forward
 
   private var history: [Card] = []  // cards we've seen
@@ -80,6 +81,9 @@ final class FlashcardViewModel: ObservableObject {
   }
 
   func resetDeck() {
+    cancelAutoReveal()
+    deckComplete = false
+    isRevealed = false
     deck = allCards.shuffled()
     history = []
     currentIndex = -1
@@ -97,7 +101,12 @@ final class FlashcardViewModel: ObservableObject {
       current = history[currentIndex]
     } else {
       // Get a new card from the deck
-      if deck.isEmpty { deck = allCards.shuffled() }
+      if deck.isEmpty {
+        // Completed the deck
+        current = nil
+        deckComplete = true
+        return
+      }
       let newCard = deck.popLast()
 
       // Add to history
@@ -169,10 +178,16 @@ struct ContentView: View {
         header
         Spacer(minLength: 8)
         card
+          .allowsHitTesting(!vm.deckComplete)
         Spacer(minLength: 16)
         footer
       }
       .padding()
+
+      if vm.deckComplete {
+        completionOverlay
+          .transition(.opacity.combined(with: .scale))
+      }
     }
   }
 
@@ -183,13 +198,19 @@ struct ContentView: View {
           .font(.largeTitle.weight(.bold))
           .foregroundStyle(.white)
         if let total = vm.totalCount {
-          Text("\(vm.remainingCount) left in deck • \(total) total")
-            .font(.subheadline)
-            .foregroundStyle(.white.opacity(0.8))
+          if vm.deckComplete {
+            Text("Deck complete • \(total) total")
+              .font(.subheadline)
+              .foregroundStyle(.white.opacity(0.9))
+          } else {
+            Text("\(vm.remainingCount) left in deck • \(total) total")
+              .font(.subheadline)
+              .foregroundStyle(.white.opacity(0.8))
+          }
         }
       }
       Spacer()
-      Button("Reset") { vm.resetDeck() }
+      Button(vm.deckComplete ? "Start Again" : "Reset") { vm.resetDeck() }
         .buttonStyle(.borderedProminent)
         .tint(.white)
         .foregroundStyle(.black)
@@ -294,6 +315,36 @@ struct ContentView: View {
         .foregroundStyle(.white.opacity(0.9))
     }
     .padding(.vertical, 4)
+  }
+  // End-of-deck overlay
+  private var completionOverlay: some View {
+    VStack(spacing: 20) {
+      Text("🎉")
+        .font(.system(size: 96))
+      Text("All cards complete!")
+        .font(.title.weight(.bold))
+        .foregroundStyle(.white)
+      Text("Start again?")
+        .font(.headline)
+        .foregroundStyle(.white.opacity(0.9))
+      HStack(spacing: 12) {
+        Button {
+          vm.resetDeck()
+        } label: {
+          Text("Start Again")
+            .font(.headline)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(.white)
+        .foregroundStyle(.black)
+      }
+    }
+    .padding(28)
+    .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24, style: .continuous))
+    .shadow(color: .black.opacity(0.25), radius: 20, x: 0, y: 12)
+    .padding()
   }
 }
 
