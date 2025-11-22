@@ -84,8 +84,7 @@ final class FlashcardViewModel: ObservableObject {
 
   func toggleReveal() {
     if isRevealed {
-      isRevealed = false
-      scheduleAutoReveal()
+      nextCard()
     } else {
       isRevealed = true
       cancelAutoReveal()
