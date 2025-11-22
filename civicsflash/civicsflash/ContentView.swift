@@ -56,11 +56,16 @@ final class FlashcardViewModel: ObservableObject {
   @Published private(set) var current: Card?
   @Published var isRevealed: Bool = false
 
+  private var history: [Card] = []  // cards we've seen
+  private var currentIndex: Int = -1  // position in history
+
   let autoRevealDelay: TimeInterval = 10.0
   private var autoRevealWorkItem: DispatchWorkItem?
 
   var totalCount: Int? { allCards.isEmpty ? nil : allCards.count }
   var remainingCount: Int { deck.count + (current == nil ? 0 : 1) }
+  var canGoBack: Bool { currentIndex > 0 }
+  var canGoForward: Bool { currentIndex < history.count - 1 }
 
   init() { reload() }
 
@@ -71,14 +76,50 @@ final class FlashcardViewModel: ObservableObject {
 
   func resetDeck() {
     deck = allCards.shuffled()
+    history = []
+    currentIndex = -1
     nextCard()
   }
 
   func nextCard() {
     isRevealed = false
     cancelAutoReveal()
-    if deck.isEmpty { deck = allCards.shuffled() }
-    current = deck.popLast()
+
+    // If we're in the middle of history, move forward in history
+    if canGoForward {
+      currentIndex += 1
+      current = history[currentIndex]
+    } else {
+      // Get a new card from the deck
+      if deck.isEmpty { deck = allCards.shuffled() }
+      let newCard = deck.popLast()
+
+      // Add to history
+      if let card = newCard {
+        // If we're at the end of history, append
+        if currentIndex == history.count - 1 {
+          history.append(card)
+          currentIndex = history.count - 1
+        } else {
+          // We were in the middle, so truncate forward history and add new card
+          history = Array(history[0...currentIndex])
+          history.append(card)
+          currentIndex = history.count - 1
+        }
+      }
+
+      current = newCard
+    }
+
+    scheduleAutoReveal()
+  }
+
+  func previousCard() {
+    guard canGoBack else { return }
+    isRevealed = false
+    cancelAutoReveal()
+    currentIndex -= 1
+    current = history[currentIndex]
     scheduleAutoReveal()
   }
 
@@ -195,9 +236,12 @@ struct ContentView: View {
             }
             .onEnded { value in
               let shouldSwipe = abs(value.translation.width) > swipeThreshold
+              let isSwipeRight = value.translation.width > 0
+              let isSwipeLeft = value.translation.width < 0
+
               withAnimation(.spring(response: 0.35, dampingFraction: 0.8)) {
                 if shouldSwipe {
-                  let direction: CGFloat = value.translation.width >= 0 ? 1 : -1
+                  let direction: CGFloat = isSwipeRight ? 1 : -1
                   dragOffset = CGSize(width: direction * 600, height: 0)
                 } else {
                   dragOffset = .zero
@@ -207,7 +251,11 @@ struct ContentView: View {
               if shouldSwipe {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
                   dragOffset = .zero
-                  vm.nextCard()
+                  if isSwipeRight && vm.canGoBack {
+                    vm.previousCard()
+                  } else if isSwipeLeft {
+                    vm.nextCard()
+                  }
                 }
               }
             }
@@ -233,7 +281,7 @@ struct ContentView: View {
     HStack(spacing: 12) {
       Image(systemName: "hand.tap")
         .foregroundStyle(.white.opacity(0.9))
-      Text("Tap to reveal • Swipe left/right for next")
+      Text("Tap to reveal • Swipe left for next • Swipe right to go back")
         .font(.footnote)
         .foregroundStyle(.white.opacity(0.9))
     }
