@@ -280,20 +280,27 @@ struct ContentView: View {
         }
       }
       Spacer()
-      HStack(spacing: 8) {
-        Button(vm.deckComplete ? "Start Again" : "Reset") { vm.resetDeck() }
-          .buttonStyle(.borderedProminent)
-          .tint(.white)
-          .foregroundStyle(.black)
+      HStack(spacing: 12) {
         Button {
-          showSettings = true
+          vm.resetDeck()
         } label: {
-          Image(systemName: "gearshape.fill")
-            .imageScale(.large)
-            .padding(10)
+          Label(vm.deckComplete ? "Start Again" : "Reset", systemImage: "arrow.counterclockwise")
+            .font(.subheadline.weight(.medium))
         }
         .buttonStyle(.bordered)
         .tint(.white)
+        .controlSize(.regular)
+
+        Button {
+          showSettings = true
+        } label: {
+          Label("Settings", systemImage: "gearshape.fill")
+            .font(.subheadline.weight(.medium))
+            .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.bordered)
+        .tint(.white)
+        .controlSize(.regular)
       }
     }
   }
