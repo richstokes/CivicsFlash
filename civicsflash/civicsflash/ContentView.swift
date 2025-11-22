@@ -224,6 +224,7 @@ struct ContentView: View {
     Text(text)
       .font(.caption.weight(.semibold))
       .foregroundStyle(.white)
+      .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, 10)
       .padding(.vertical, 6)
       .background(Color.accentColor.opacity(0.9), in: Capsule())
