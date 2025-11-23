@@ -412,9 +412,6 @@ struct ContentView: View {
       Text("All cards complete!")
         .font(.title.weight(.bold))
         .foregroundStyle(.white)
-      Text("Start again?")
-        .font(.headline)
-        .foregroundStyle(.white.opacity(0.9))
       HStack(spacing: 12) {
         Button {
           vm.resetDeck()
