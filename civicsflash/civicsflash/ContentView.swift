@@ -9,7 +9,7 @@ import Combine
 import Foundation
 import SwiftUI
 
-// MARK: - Data models and loader (kept in this file to avoid Xcode target linking issues)
+// MARK: - Data models and loader
 struct QuestionBank: Codable { let categories: [QuestionCategory] }
 struct QuestionCategory: Codable, Hashable, Identifiable {
   let name: String
