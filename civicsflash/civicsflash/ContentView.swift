@@ -28,6 +28,33 @@ struct Card: Identifiable, Hashable {
   let answers: [String]
 }
 
+// MARK: - Flag Manager
+struct FlagManager {
+  static let flaggedCardsKey = "flagged_cards"
+  static let showFlaggedOnlyKey = "show_flagged_only"
+
+  static func loadFlaggedCards() -> Set<Int> {
+    let defaults = UserDefaults.standard
+    if let array = defaults.array(forKey: flaggedCardsKey) as? [Int] {
+      return Set(array)
+    }
+    return []
+  }
+
+  static func saveFlaggedCards(_ ids: Set<Int>) {
+    let defaults = UserDefaults.standard
+    defaults.set(Array(ids), forKey: flaggedCardsKey)
+  }
+
+  static func loadShowFlaggedOnly() -> Bool {
+    return UserDefaults.standard.bool(forKey: showFlaggedOnlyKey)
+  }
+
+  static func saveShowFlaggedOnly(_ value: Bool) {
+    UserDefaults.standard.set(value, forKey: showFlaggedOnlyKey)
+  }
+}
+
 // MARK: - Settings / Overrides
 struct SettingsManager {
   static let governorKey = "setting_governor"
@@ -120,6 +147,8 @@ final class FlashcardViewModel: ObservableObject {
   @Published var isRevealed: Bool = false
   @Published var deckComplete: Bool = false
   @Published private(set) var transitionDirection: TransitionDirection = .forward
+  @Published var flaggedCardIDs: Set<Int> = []
+  @Published var showFlaggedOnly: Bool = false
 
   private var history: [Card] = []  // cards we've seen
   private var currentIndex: Int = -1  // position in history
@@ -131,12 +160,17 @@ final class FlashcardViewModel: ObservableObject {
   var remainingCount: Int { deck.count + (current == nil ? 0 : 1) }
   var canGoBack: Bool { currentIndex > 0 }
   var canGoForward: Bool { currentIndex < history.count - 1 }
+  var hasFlaggedCards: Bool { !flaggedCardIDs.isEmpty }
 
   enum TransitionDirection {
     case forward, backward
   }
 
-  init() { reload() }
+  init() {
+    loadFlaggedCards()
+    loadShowFlaggedOnly()
+    reload()
+  }
 
   func reload() {
     allCards = DataLoader.loadCards()
@@ -147,10 +181,62 @@ final class FlashcardViewModel: ObservableObject {
     cancelAutoReveal()
     deckComplete = false
     isRevealed = false
-    deck = allCards.shuffled()
+
+    // Filter cards based on showFlaggedOnly setting
+    let cardsToUse =
+      showFlaggedOnly
+      ? allCards.filter { flaggedCardIDs.contains($0.id) }
+      : allCards
+
+    deck = cardsToUse.shuffled()
     history = []
     currentIndex = -1
     nextCard()
+  }
+
+  func toggleFlag(for cardID: Int) {
+    if flaggedCardIDs.contains(cardID) {
+      flaggedCardIDs.remove(cardID)
+    } else {
+      flaggedCardIDs.insert(cardID)
+    }
+    saveFlaggedCards()
+  }
+
+  func isFlagged(_ cardID: Int) -> Bool {
+    return flaggedCardIDs.contains(cardID)
+  }
+
+  func toggleShowFlaggedOnly() {
+    showFlaggedOnly.toggle()
+    saveShowFlaggedOnly()
+    resetDeck()
+  }
+
+  func clearAllFlags() {
+    flaggedCardIDs.removeAll()
+    saveFlaggedCards()
+    if showFlaggedOnly {
+      showFlaggedOnly = false
+      saveShowFlaggedOnly()
+      resetDeck()
+    }
+  }
+
+  private func loadFlaggedCards() {
+    flaggedCardIDs = FlagManager.loadFlaggedCards()
+  }
+
+  private func saveFlaggedCards() {
+    FlagManager.saveFlaggedCards(flaggedCardIDs)
+  }
+
+  private func loadShowFlaggedOnly() {
+    showFlaggedOnly = FlagManager.loadShowFlaggedOnly()
+  }
+
+  private func saveShowFlaggedOnly() {
+    FlagManager.saveShowFlaggedOnly(showFlaggedOnly)
   }
 
   func nextCard() {
@@ -255,9 +341,10 @@ struct ContentView: View {
       }
     }
     .sheet(isPresented: $showSettings) {
-      SettingsView {
-        vm.reload()  // re-read overrides and rebuild deck
-      }
+      SettingsView(
+        onSaved: {
+          vm.reload()  // re-read overrides and rebuild deck
+        }, viewModel: vm)
     }
   }
 
@@ -273,9 +360,15 @@ struct ContentView: View {
               .font(.subheadline)
               .foregroundStyle(.white.opacity(0.9))
           } else {
-            Text("\(vm.remainingCount) left in deck • \(total) total")
-              .font(.subheadline)
-              .foregroundStyle(.white.opacity(0.8))
+            if vm.showFlaggedOnly {
+              Text("\(vm.remainingCount) left • \(vm.flaggedCardIDs.count) flagged")
+                .font(.subheadline)
+                .foregroundStyle(.orange)
+            } else {
+              Text("\(vm.remainingCount) left in deck • \(total) total")
+                .font(.subheadline)
+                .foregroundStyle(.white.opacity(0.8))
+            }
           }
         }
       }
@@ -339,6 +432,23 @@ struct ContentView: View {
             }
 
             Spacer(minLength: 0)
+
+            // Flag button at bottom
+            HStack {
+              Spacer()
+              Button {
+                withAnimation(.spring(response: 0.3, dampingFraction: 0.6)) {
+                  vm.toggleFlag(for: card.id)
+                }
+              } label: {
+                Image(systemName: vm.isFlagged(card.id) ? "flag.fill" : "flag")
+                  .font(.title2)
+                  .foregroundStyle(vm.isFlagged(card.id) ? Color.orange : Color.secondary)
+              }
+              .buttonStyle(.plain)
+              Spacer()
+            }
+            .padding(.top, 8)
           }
           .padding(24)
         }
@@ -436,6 +546,7 @@ struct ContentView: View {
 // MARK: - Settings UI
 struct SettingsView: View {
   var onSaved: () -> Void
+  @ObservedObject var viewModel: FlashcardViewModel
   @Environment(\.dismiss) private var dismiss
   @State private var governor: String =
     UserDefaults.standard.string(forKey: SettingsManager.governorKey) ?? ""
@@ -445,10 +556,44 @@ struct SettingsView: View {
     UserDefaults.standard.string(forKey: SettingsManager.senatorKey) ?? ""
   @State private var representative: String =
     UserDefaults.standard.string(forKey: SettingsManager.representativeKey) ?? ""
+  @State private var showResetConfirmation = false
 
   var body: some View {
     NavigationStack {
       Form {
+        Section("Flagged Cards") {
+          Toggle(
+            isOn: Binding(
+              get: { viewModel.showFlaggedOnly },
+              set: { _ in viewModel.toggleShowFlaggedOnly() }
+            )
+          ) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Show Flagged Only")
+                .font(.body)
+              Text("Only show cards you've flagged")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+          }
+          .disabled(!viewModel.hasFlaggedCards)
+
+          Button(role: .destructive) {
+            showResetConfirmation = true
+          } label: {
+            HStack {
+              Text("Clear Flagged Cards")
+              Spacer()
+              if viewModel.hasFlaggedCards {
+                Text("\(viewModel.flaggedCardIDs.count)")
+                  .font(.caption)
+                  .foregroundColor(.secondary)
+              }
+            }
+          }
+          .disabled(!viewModel.hasFlaggedCards)
+        }
+
         Section("State leadership") {
           VStack(alignment: .leading, spacing: 4) {
             Text("Governor")
@@ -494,6 +639,18 @@ struct SettingsView: View {
         ToolbarItem(placement: .confirmationAction) {
           Button("Save") { saveAndClose() }.bold()
         }
+      }
+      .confirmationDialog(
+        "Reset Flagged Cards",
+        isPresented: $showResetConfirmation,
+        titleVisibility: .visible
+      ) {
+        Button("Reset All Flags", role: .destructive) {
+          viewModel.clearAllFlags()
+        }
+        Button("Cancel", role: .cancel) {}
+      } message: {
+        Text("This will remove all flags from cards. This action cannot be undone.")
       }
     }
   }
