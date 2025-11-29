@@ -450,15 +450,35 @@ struct SettingsView: View {
     NavigationStack {
       Form {
         Section("State leadership") {
-          TextField("Governor", text: $governor)
-            .textContentType(.name)
-          TextField("One U.S. Senator", text: $senator)
-            .textContentType(.name)
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Governor")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            TextField("Enter governor name", text: $governor)
+              .textContentType(.name)
+          }
+          VStack(alignment: .leading, spacing: 4) {
+            Text("U.S. Senator")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            TextField("Enter senator name", text: $senator)
+              .textContentType(.name)
+          }
         }
         Section("State details") {
-          TextField("State capital", text: $capital)
-          TextField("U.S. Representative", text: $representative)
-            .textContentType(.name)
+          VStack(alignment: .leading, spacing: 4) {
+            Text("State Capital")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            TextField("Enter state capital", text: $capital)
+          }
+          VStack(alignment: .leading, spacing: 4) {
+            Text("U.S. Representative")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            TextField("Enter representative name", text: $representative)
+              .textContentType(.name)
+          }
         }
         Section(
           footer: Text(
