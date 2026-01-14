@@ -610,7 +610,13 @@ struct SettingsView: View {
               .textContentType(.name)
           }
         }
-        Section("State details") {
+
+        Section(
+          header: Text("State details"),
+          footer: Text(
+            "To find your current representative, visit https://www.house.gov/representatives/find-your-representative"
+          )
+        ) {
           VStack(alignment: .leading, spacing: 4) {
             Text("State Capital")
               .font(.caption)
@@ -624,12 +630,26 @@ struct SettingsView: View {
             TextField("Enter representative name", text: $representative)
               .textContentType(.name)
           }
+        }.padding(.bottom, 8)
+
+        Section("About") {
+          VStack(alignment: .leading, spacing: 8) {
+            Text(
+              "Civics Flash is completely free for everyone. Donations do not unlock any features or content."
+            )
+            .font(.footnote)
+            .foregroundColor(.secondary)
+
+            Text("If you find the app useful, you can optionally support the developer:")
+              .font(.footnote)
+              .foregroundColor(.secondary)
+
+            Link(destination: URL(string: "https://buymeacoffee.com/richstokes")!) {
+              Label("Buy me a coffee", systemImage: "cup.and.saucer.fill")
+            }
+          }
+          .padding(.vertical, 8)
         }
-        Section(
-          footer: Text(
-            "To find your current representative, visit https://www.house.gov/representatives/find-your-representative"
-          )
-        ) { EmptyView() }
       }
       .navigationTitle("Settings")
       .toolbar {
