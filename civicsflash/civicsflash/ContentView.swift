@@ -5,6 +5,7 @@
 //  Created by Richard Stokes on 11/22/25.
 //
 
+import AVFoundation
 import Combine
 import Foundation
 import SwiftUI
@@ -103,6 +104,39 @@ struct SettingsManager {
   }
 }
 
+// MARK: - Speech Settings
+struct SpeechSettingsManager {
+  static let voiceIdentifierKey = "speech_voice_identifier"
+  static let speechRateKey = "speech_rate"
+  static let randomVoiceKey = "speech_random_voice"
+  static let defaultRate: Float = 0.46
+
+  static func loadVoiceIdentifier() -> String? {
+    UserDefaults.standard.string(forKey: voiceIdentifierKey)
+  }
+
+  static func saveVoiceIdentifier(_ id: String?) {
+    UserDefaults.standard.set(id, forKey: voiceIdentifierKey)
+  }
+
+  static func loadSpeechRate() -> Float {
+    let rate = UserDefaults.standard.float(forKey: speechRateKey)
+    return rate > 0 ? rate : defaultRate
+  }
+
+  static func saveSpeechRate(_ rate: Float) {
+    UserDefaults.standard.set(rate, forKey: speechRateKey)
+  }
+
+  static func loadRandomVoice() -> Bool {
+    UserDefaults.standard.bool(forKey: randomVoiceKey)
+  }
+
+  static func saveRandomVoice(_ value: Bool) {
+    UserDefaults.standard.set(value, forKey: randomVoiceKey)
+  }
+}
+
 enum DataLoader {
   static func loadCards() -> [Card] {
     guard let url = Bundle.main.url(forResource: "questions", withExtension: "json") else {
@@ -136,6 +170,151 @@ enum DataLoader {
       print("❌ Error loading questions: \(error)")
       return []
     }
+  }
+}
+
+// MARK: - Speech Manager
+final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
+  @Published private(set) var isActive = false
+  @Published private(set) var currentPhase: SpeechPhase = .idle
+
+  enum SpeechPhase: Equatable {
+    case idle
+    case speakingQuestion
+    case pauseBeforeAnswer
+    case speakingAnswer
+    case pauseBeforeNext
+  }
+
+  private let synthesizer = AVSpeechSynthesizer()
+  private weak var viewModel: FlashcardViewModel?
+  private var currentCard: Card?
+  private var pauseWorkItem: DispatchWorkItem?
+  private var shuffledVoices: [AVSpeechSynthesisVoice] = []
+  private var voiceIndex: Int = 0
+
+  override init() {
+    super.init()
+    synthesizer.delegate = self
+  }
+
+  func toggle(with vm: FlashcardViewModel) {
+    if isActive { stop() } else { start(with: vm) }
+  }
+
+  func start(with vm: FlashcardViewModel) {
+    stop()
+    viewModel = vm
+    isActive = true
+    // Pre-shuffle voices for random cycling
+    shuffledVoices = SpeechManager.availableEnglishVoices().shuffled()
+    voiceIndex = 0
+    vm.resetDeck(prioritizeFlagged: true)
+    speakCurrentCard()
+  }
+
+  func stop() {
+    synthesizer.stopSpeaking(at: .immediate)
+    cancelPendingWork()
+    isActive = false
+    currentPhase = .idle
+    currentCard = nil
+  }
+
+  private func speakCurrentCard() {
+    guard isActive, let vm = viewModel, let card = vm.current else {
+      stop()
+      return
+    }
+    currentCard = card
+    currentPhase = .speakingQuestion
+    vm.isRevealed = false
+    speak(card.question)
+  }
+
+  private func speak(_ text: String) {
+    let utterance = AVSpeechUtterance(string: text)
+    if SpeechSettingsManager.loadRandomVoice(), !shuffledVoices.isEmpty {
+      utterance.voice = shuffledVoices[voiceIndex % shuffledVoices.count]
+    } else {
+      let voiceId = SpeechSettingsManager.loadVoiceIdentifier()
+      if let id = voiceId, !id.isEmpty,
+        let voice = AVSpeechSynthesisVoice(identifier: id)
+      {
+        utterance.voice = voice
+      } else {
+        utterance.voice = AVSpeechSynthesisVoice(language: "en-US")
+      }
+    }
+    utterance.rate = SpeechSettingsManager.loadSpeechRate()
+    utterance.pitchMultiplier = 1.0
+    synthesizer.speak(utterance)
+  }
+
+  /// Advance to the next random voice for the next card
+  private func advanceVoice() {
+    voiceIndex += 1
+  }
+
+  private func cancelPendingWork() {
+    pauseWorkItem?.cancel()
+    pauseWorkItem = nil
+  }
+
+  private func scheduleAfterDelay(_ delay: TimeInterval, action: @escaping () -> Void) {
+    cancelPendingWork()
+    let work = DispatchWorkItem { action() }
+    pauseWorkItem = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+  }
+
+  // MARK: AVSpeechSynthesizerDelegate
+  func speechSynthesizer(
+    _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
+  ) {
+    guard isActive, let card = currentCard, let vm = viewModel else { return }
+
+    switch currentPhase {
+    case .speakingQuestion:
+      currentPhase = .pauseBeforeAnswer
+      scheduleAfterDelay(1.0) { [weak self] in
+        guard let self = self, self.isActive else { return }
+        withAnimation(.spring()) { vm.isRevealed = true }
+        self.currentPhase = .speakingAnswer
+        let answersText = card.answers.prefix(2).joined(separator: ". ")
+        self.speak(answersText)
+      }
+    case .speakingAnswer:
+      currentPhase = .pauseBeforeNext
+      scheduleAfterDelay(2.5) { [weak self] in
+        guard let self = self, self.isActive, let vm = self.viewModel else { return }
+        self.currentPhase = .idle
+        vm.nextCard(autoReveal: false)
+        if vm.deckComplete {
+          self.stop()
+        } else {
+          self.advanceVoice()
+          self.speakCurrentCard()
+        }
+      }
+    default:
+      break
+    }
+  }
+
+  /// Known novelty / non-human voice names bundled with iOS/macOS
+  private static let noveltyVoiceNames: Set<String> = [
+    "Bells", "Boing", "Bubbles", "Cellos", "Trinoids",
+    "Whisper", "Wobble", "Zarvox", "Albert", "Bad News",
+    "Bahh", "Good News", "Jester", "Organ", "Superstar",
+    "Ralph", "Kathy", "Junior", "Fred", "Hysterical",
+    "Deranged", "Pipe Organ",
+  ]
+
+  static func availableEnglishVoices() -> [AVSpeechSynthesisVoice] {
+    AVSpeechSynthesisVoice.speechVoices()
+      .filter { $0.language.hasPrefix("en") && !noveltyVoiceNames.contains($0.name) }
+      .sorted { $0.name < $1.name }
   }
 }
 
@@ -177,7 +356,7 @@ final class FlashcardViewModel: ObservableObject {
     resetDeck()
   }
 
-  func resetDeck() {
+  func resetDeck(prioritizeFlagged: Bool = false) {
     cancelAutoReveal()
     deckComplete = false
     isRevealed = false
@@ -188,7 +367,14 @@ final class FlashcardViewModel: ObservableObject {
       ? allCards.filter { flaggedCardIDs.contains($0.id) }
       : allCards
 
-    deck = cardsToUse.shuffled()
+    if prioritizeFlagged && !showFlaggedOnly && !flaggedCardIDs.isEmpty {
+      // Flagged cards at end of array so they are popped first by popLast()
+      let rest = cardsToUse.filter { !flaggedCardIDs.contains($0.id) }.shuffled()
+      let flagged = cardsToUse.filter { flaggedCardIDs.contains($0.id) }.shuffled()
+      deck = rest + flagged
+    } else {
+      deck = cardsToUse.shuffled()
+    }
     history = []
     currentIndex = -1
     nextCard()
@@ -239,7 +425,7 @@ final class FlashcardViewModel: ObservableObject {
     FlagManager.saveShowFlaggedOnly(showFlaggedOnly)
   }
 
-  func nextCard() {
+  func nextCard(autoReveal: Bool = true) {
     isRevealed = false
     cancelAutoReveal()
     transitionDirection = .forward
@@ -275,7 +461,7 @@ final class FlashcardViewModel: ObservableObject {
       current = newCard
     }
 
-    scheduleAutoReveal()
+    if autoReveal { scheduleAutoReveal() }
   }
 
   func previousCard() {
@@ -313,6 +499,7 @@ final class FlashcardViewModel: ObservableObject {
 
 struct ContentView: View {
   @StateObject private var vm = FlashcardViewModel()
+  @StateObject private var speechManager = SpeechManager()
   @State private var dragOffset: CGSize = .zero
   private let swipeThreshold: CGFloat = 80
 
@@ -329,7 +516,7 @@ struct ContentView: View {
         header
         Spacer(minLength: 8)
         card
-          .allowsHitTesting(!vm.deckComplete)
+          .allowsHitTesting(!vm.deckComplete && !speechManager.isActive)
         Spacer(minLength: 16)
         footer
       }
@@ -373,27 +560,44 @@ struct ContentView: View {
         }
       }
       Spacer()
-      HStack(spacing: 12) {
+      HStack(spacing: 8) {
         Button {
-          vm.resetDeck()
+          speechManager.toggle(with: vm)
         } label: {
-          Label(vm.deckComplete ? "Start Again" : "Reset", systemImage: "arrow.counterclockwise")
+          Image(systemName: speechManager.isActive ? "stop.fill" : "speaker.wave.2.fill")
             .font(.subheadline.weight(.medium))
+            .frame(width: 20, height: 20)
         }
         .buttonStyle(.bordered)
-        .tint(.white)
+        .tint(speechManager.isActive ? .orange : .white)
         .controlSize(.regular)
+        .accessibilityLabel(speechManager.isActive ? "Stop reading" : "Read aloud")
 
         Button {
-          showSettings = true
+          speechManager.stop()
+          vm.resetDeck()
         } label: {
-          Label("Settings", systemImage: "gearshape.fill")
+          Image(systemName: "arrow.counterclockwise")
             .font(.subheadline.weight(.medium))
-            .labelStyle(.iconOnly)
+            .frame(width: 20, height: 20)
         }
         .buttonStyle(.bordered)
         .tint(.white)
         .controlSize(.regular)
+        .accessibilityLabel(vm.deckComplete ? "Start Again" : "Reset")
+
+        Button {
+          speechManager.stop()
+          showSettings = true
+        } label: {
+          Image(systemName: "gearshape.fill")
+            .font(.subheadline.weight(.medium))
+            .frame(width: 20, height: 20)
+        }
+        .buttonStyle(.bordered)
+        .tint(.white)
+        .controlSize(.regular)
+        .accessibilityLabel("Settings")
       }
     }
   }
@@ -505,14 +709,27 @@ struct ContentView: View {
   }
 
   private var footer: some View {
-    HStack(spacing: 12) {
-      Image(systemName: "hand.tap")
-        .foregroundStyle(.white.opacity(0.9))
-      Text("Tap to reveal • Swipe left for next • Swipe right to go back")
-        .font(.footnote)
-        .foregroundStyle(.white.opacity(0.9))
+    Group {
+      if speechManager.isActive {
+        HStack(spacing: 12) {
+          Image(systemName: "speaker.wave.2.fill")
+            .foregroundStyle(.orange)
+          Text("Reading aloud\u{2026} tap Stop to end")
+            .font(.footnote)
+            .foregroundStyle(.white.opacity(0.9))
+        }
+        .padding(.vertical, 4)
+      } else {
+        HStack(spacing: 12) {
+          Image(systemName: "hand.tap")
+            .foregroundStyle(.white.opacity(0.9))
+          Text("Tap to reveal • Swipe left for next • Swipe right to go back")
+            .font(.footnote)
+            .foregroundStyle(.white.opacity(0.9))
+        }
+        .padding(.vertical, 4)
+      }
     }
-    .padding(.vertical, 4)
   }
   // End-of-deck overlay
   private var completionOverlay: some View {
@@ -557,6 +774,11 @@ struct SettingsView: View {
   @State private var representative: String =
     UserDefaults.standard.string(forKey: SettingsManager.representativeKey) ?? ""
   @State private var showResetConfirmation = false
+  @State private var selectedVoiceIdentifier: String =
+    SpeechSettingsManager.loadVoiceIdentifier() ?? ""
+  @State private var speechRate: Float = SpeechSettingsManager.loadSpeechRate()
+  @State private var randomVoice: Bool = SpeechSettingsManager.loadRandomVoice()
+  private let availableVoices = SpeechManager.availableEnglishVoices()
 
   var body: some View {
     NavigationStack {
@@ -592,6 +814,45 @@ struct SettingsView: View {
             }
           }
           .disabled(!viewModel.hasFlaggedCards)
+        }
+
+        Section("Read Aloud") {
+          Toggle(isOn: $randomVoice) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Random Voice")
+                .font(.body)
+              Text("Use a different voice for each card")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+          }
+
+          if !randomVoice {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Voice")
+                .font(.caption)
+                .foregroundColor(.secondary)
+              Picker("Voice", selection: $selectedVoiceIdentifier) {
+                Text("System Default").tag("")
+                ForEach(availableVoices, id: \.identifier) { voice in
+                  Text(voice.name).tag(voice.identifier)
+                }
+              }
+            }
+          }
+
+          VStack(alignment: .leading, spacing: 4) {
+            Text("Reading Speed")
+              .font(.caption)
+              .foregroundColor(.secondary)
+            HStack {
+              Image(systemName: "tortoise")
+                .foregroundColor(.secondary)
+              Slider(value: $speechRate, in: 0.3...0.6, step: 0.02)
+              Image(systemName: "hare")
+                .foregroundColor(.secondary)
+            }
+          }
         }
 
         Section("State leadership") {
@@ -682,6 +943,10 @@ struct SettingsView: View {
       senator: senator.trimmingCharacters(in: .whitespacesAndNewlines),
       representative: representative.trimmingCharacters(in: .whitespacesAndNewlines)
     )
+    SpeechSettingsManager.saveVoiceIdentifier(
+      selectedVoiceIdentifier.isEmpty ? nil : selectedVoiceIdentifier)
+    SpeechSettingsManager.saveSpeechRate(speechRate)
+    SpeechSettingsManager.saveRandomVoice(randomVoice)
     onSaved()
     dismiss()
   }
