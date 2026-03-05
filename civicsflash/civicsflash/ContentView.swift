@@ -233,7 +233,10 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   private func speak(_ text: String) {
-    let utterance = AVSpeechUtterance(string: text)
+    let cleaned =
+      text.replacingOccurrences(
+        of: "\\s*\\(\\d+\\)", with: "", options: .regularExpression)
+    let utterance = AVSpeechUtterance(string: cleaned)
     if SpeechSettingsManager.loadRandomVoice(), !shuffledVoices.isEmpty {
       utterance.voice = shuffledVoices[voiceIndex % shuffledVoices.count]
     } else {
@@ -312,9 +315,21 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   ]
 
   static func availableEnglishVoices() -> [AVSpeechSynthesisVoice] {
-    AVSpeechSynthesisVoice.speechVoices()
+    let filtered =
+      AVSpeechSynthesisVoice.speechVoices()
       .filter { $0.language.hasPrefix("en") && !noveltyVoiceNames.contains($0.name) }
-      .sorted { $0.name < $1.name }
+    // Deduplicate by name, keeping the highest quality variant
+    var bestByName: [String: AVSpeechSynthesisVoice] = [:]
+    for voice in filtered {
+      if let existing = bestByName[voice.name] {
+        if voice.quality.rawValue > existing.quality.rawValue {
+          bestByName[voice.name] = voice
+        }
+      } else {
+        bestByName[voice.name] = voice
+      }
+    }
+    return bestByName.values.sorted { $0.name < $1.name }
   }
 }
 

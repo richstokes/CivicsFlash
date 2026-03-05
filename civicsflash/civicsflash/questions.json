@@ -935,8 +935,8 @@
           "id": 100,
           "question": "Name one war fought by the United States in the 1900s.",
           "answers": [
-            "World War I",
-            "World War II",
+            "World War One",
+            "World War Two",
             "Korean War",
             "Vietnam War",
             "(Persian) Gulf War"
@@ -944,7 +944,7 @@
         },
         {
           "id": 101,
-          "question": "Why did the United States enter World War I?",
+          "question": "Why did the United States enter World War One?",
           "answers": [
             "Because Germany attacked U.S. (civilian) ships",
             "To support the Allied Powers (England, France, Italy, and Russia)",
@@ -956,7 +956,7 @@
           "question": "When did all women get the right to vote?",
           "answers": [
             "1920",
-            "After World War I",
+            "After World War One",
             "(With the) 19th Amendment"
           ]
         },
