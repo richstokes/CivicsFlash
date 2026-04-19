@@ -547,85 +547,119 @@ final class FlashcardViewModel: ObservableObject {
 
 // MARK: - Patriot Background
 struct PatriotBackgroundView: View {
-  @State private var phase: CGFloat = 0
-
-  private let stripeColors: [Color] = {
-    var colors: [Color] = []
-    for i in 0..<13 {
-      colors.append(i % 2 == 0 ? Color(red: 0.7, green: 0.15, blue: 0.15) : .white)
-    }
-    return colors
-  }()
+  // Authentic US flag colors
+  private let oldGloryRed = Color(red: 0.698, green: 0.132, blue: 0.203)
+  private let oldGloryBlue = Color(red: 0.234, green: 0.234, blue: 0.430)
 
   var body: some View {
-    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
-      Canvas { ctx, size in
-        let time = context.date.timeIntervalSinceReferenceDate
-        let stripeH = size.height / 13.0
-
-        let twoPi: Double = 2.0 * .pi
-        let timePhase: Double = time * 0.6
-
-        // Draw waving stripes
-        for i in 0..<13 {
-          let y: CGFloat = CGFloat(i) * stripeH
-          let iOffset: Double = Double(i) * 0.15
-          var path = Path()
-          path.move(to: CGPoint(x: 0, y: y))
-          let steps = 40
-          for s in 0...steps {
-            let x: CGFloat = size.width * CGFloat(s) / CGFloat(steps)
-            let xNorm: Double = Double(x / size.width)
-            let angle: Double = xNorm * twoPi + timePhase + iOffset
-            let wave: CGFloat = CGFloat(sin(angle) * 4.0)
-            path.addLine(to: CGPoint(x: x, y: y + wave))
-          }
-          // Close the stripe rectangle
-          let iNextOffset: Double = Double(i + 1) * 0.15
-          for s in stride(from: steps, through: 0, by: -1) {
-            let x: CGFloat = size.width * CGFloat(s) / CGFloat(steps)
-            let xNorm: Double = Double(x / size.width)
-            let angle: Double = xNorm * twoPi + timePhase + iNextOffset
-            let wave: CGFloat = CGFloat(sin(angle) * 4.0)
-            path.addLine(to: CGPoint(x: x, y: y + stripeH + wave))
-          }
-          path.closeSubpath()
-          ctx.fill(path, with: .color(stripeColors[i]))
+    GeometryReader { geo in
+      // Render the flag at true 1.9:1 aspect ratio, positioned to cover background naturally.
+      // Using a fixed flag aspect and letting it overflow keeps proportions correct.
+      let flagHeight = geo.size.height
+      let flagWidth = flagHeight * 1.9  // official US flag proportion
+      TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+        Canvas { ctx, size in
+          let time = context.date.timeIntervalSinceReferenceDate
+          let timePhase: Double = time * 0.5
+          drawFlag(ctx: ctx, size: size, time: timePhase)
         }
-
-        // Blue canton
-        let cantonW: CGFloat = size.width * 0.4
-        let cantonH: CGFloat = stripeH * 7
-        let cantonWave: CGFloat = CGFloat(sin(timePhase) * 3.0)
-        let cantonRect = CGRect(x: 0, y: cantonWave, width: cantonW, height: cantonH)
-        ctx.fill(Path(cantonRect), with: .color(Color(red: 0.15, green: 0.2, blue: 0.55)))
-
-        // Stars in canton (5x6 grid, simplified from 50)
-        let starRows = 5
-        let starCols = 6
-        let starSpacingX: CGFloat = cantonW / CGFloat(starCols + 1)
-        let starSpacingY: CGFloat = cantonH / CGFloat(starRows + 1)
-        let starTimePhase: Double = time * 0.5
-        for row in 1...starRows {
-          for col in 1...starCols {
-            let sx: CGFloat = starSpacingX * CGFloat(col)
-            let sy: CGFloat = starSpacingY * CGFloat(row) + cantonWave
-            let starAngle: Double = starTimePhase + Double(row + col) * 0.3
-            let starWave: CGFloat = CGFloat(sin(starAngle) * 2.0)
-            let starPath = starShape(
-              center: CGPoint(x: sx, y: sy + starWave),
-              points: 5,
-              innerRadius: 2.5,
-              outerRadius: 5.5
-            )
-            ctx.fill(starPath, with: .color(.white))
-          }
-        }
+        .frame(width: flagWidth, height: flagHeight)
+        .offset(x: (geo.size.width - flagWidth) / 2)
       }
     }
-    .opacity(0.18)
+    .opacity(0.45)
     .ignoresSafeArea()
     .allowsHitTesting(false)
+  }
+
+  private func drawFlag(ctx: GraphicsContext, size: CGSize, time: Double) {
+    let stripeH: CGFloat = size.height / 13.0
+    let twoPi: Double = 2.0 * .pi
+    let waveAmplitude: CGFloat = size.height * 0.018
+    let waveFreq: Double = 1.5  // waves per flag width
+
+    // Draw stripes
+    for i in 0..<13 {
+      let y: CGFloat = CGFloat(i) * stripeH
+      let iOffset: Double = Double(i) * 0.08
+      var path = Path()
+      let steps = 60
+      // top edge
+      for s in 0...steps {
+        let x: CGFloat = size.width * CGFloat(s) / CGFloat(steps)
+        let xNorm: Double = Double(x / size.width)
+        let angle: Double = xNorm * twoPi * waveFreq + time + iOffset
+        let wave: CGFloat = CGFloat(sin(angle)) * waveAmplitude
+        let pt = CGPoint(x: x, y: y + wave)
+        if s == 0 { path.move(to: pt) } else { path.addLine(to: pt) }
+      }
+      // bottom edge
+      let iNext: Double = Double(i + 1) * 0.08
+      for s in stride(from: steps, through: 0, by: -1) {
+        let x: CGFloat = size.width * CGFloat(s) / CGFloat(steps)
+        let xNorm: Double = Double(x / size.width)
+        let angle: Double = xNorm * twoPi * waveFreq + time + iNext
+        let wave: CGFloat = CGFloat(sin(angle)) * waveAmplitude
+        path.addLine(to: CGPoint(x: x, y: y + stripeH + wave))
+      }
+      path.closeSubpath()
+      let isRed = i % 2 == 0
+      ctx.fill(path, with: .color(isRed ? oldGloryRed : .white))
+    }
+
+    // Canton: 0.76 of hoist side (height of 7 stripes) × 0.4 of width
+    let cantonW: CGFloat = size.width * 0.4
+    let cantonH: CGFloat = stripeH * 7
+
+    // Build canton path that follows the wave
+    var cantonPath = Path()
+    let steps = 40
+    // top edge of canton
+    for s in 0...steps {
+      let x: CGFloat = cantonW * CGFloat(s) / CGFloat(steps)
+      let xNorm: Double = Double(x / size.width)
+      let angle: Double = xNorm * twoPi * waveFreq + time
+      let wave: CGFloat = CGFloat(sin(angle)) * waveAmplitude
+      let pt = CGPoint(x: x, y: wave)
+      if s == 0 { cantonPath.move(to: pt) } else { cantonPath.addLine(to: pt) }
+    }
+    // bottom edge of canton
+    let bottomOffset: Double = 7 * 0.08
+    for s in stride(from: steps, through: 0, by: -1) {
+      let x: CGFloat = cantonW * CGFloat(s) / CGFloat(steps)
+      let xNorm: Double = Double(x / size.width)
+      let angle: Double = xNorm * twoPi * waveFreq + time + bottomOffset
+      let wave: CGFloat = CGFloat(sin(angle)) * waveAmplitude
+      cantonPath.addLine(to: CGPoint(x: x, y: cantonH + wave))
+    }
+    cantonPath.closeSubpath()
+    ctx.fill(cantonPath, with: .color(oldGloryBlue))
+
+    // 50 stars in 9 rows: 6-5-6-5-6-5-6-5-6
+    // Horizontal spacing: 6-star rows use 12 equal parts, 5-star rows use 10 equal parts
+    // Vertical: 9 rows + padding, use 10 equal parts of canton height
+    let starRadius: CGFloat = min(cantonW, cantonH) * 0.035
+    let vStep = cantonH / 10.0
+    for rowIdx in 0..<9 {
+      let isLongRow = rowIdx % 2 == 0  // rows 0,2,4,6,8 have 6 stars
+      let count = isLongRow ? 6 : 5
+      let hStep = cantonW / CGFloat(isLongRow ? 12 : 10)
+      let startX: CGFloat = isLongRow ? hStep : hStep
+      let y: CGFloat = vStep * CGFloat(rowIdx + 1)
+      for col in 0..<count {
+        let x: CGFloat = startX + hStep * 2.0 * CGFloat(col)
+        let xNorm: Double = Double(x / size.width)
+        let angle: Double = xNorm * twoPi * waveFreq + time + Double(rowIdx) * 0.04
+        let wave: CGFloat = CGFloat(sin(angle)) * waveAmplitude
+        let starPath = starShape(
+          center: CGPoint(x: x, y: y + wave),
+          points: 5,
+          innerRadius: starRadius * 0.4,
+          outerRadius: starRadius
+        )
+        ctx.fill(starPath, with: .color(.white))
+      }
+    }
   }
 
   private func starShape(center: CGPoint, points: Int, innerRadius: CGFloat, outerRadius: CGFloat)
@@ -634,8 +668,8 @@ struct PatriotBackgroundView: View {
     var path = Path()
     let angleStep: CGFloat = .pi / CGFloat(points)
     for i in 0..<(points * 2) {
-      let angle = CGFloat(i) * angleStep - .pi / 2
-      let radius = i % 2 == 0 ? outerRadius : innerRadius
+      let angle: CGFloat = CGFloat(i) * angleStep - .pi / 2
+      let radius: CGFloat = i % 2 == 0 ? outerRadius : innerRadius
       let point = CGPoint(
         x: center.x + cos(angle) * radius,
         y: center.y + sin(angle) * radius
@@ -655,10 +689,23 @@ struct ThemedBackground: View {
   var body: some View {
     ZStack {
       if theme.patriotMode {
-        // Dark base behind the flag so the low-opacity flag art is visible
-        (colorScheme == .dark ? Color.black : Color(white: 0.95))
+        // Dark base so the flag reads well and whites don't blow out
+        Color(red: 0.12, green: 0.12, blue: 0.18)
           .ignoresSafeArea()
         PatriotBackgroundView()
+        // Contrast scrims so overlaid text stays legible over any flag region
+        LinearGradient(
+          colors: [
+            Color.black.opacity(0.55),
+            Color.black.opacity(0.15),
+            Color.black.opacity(0.0),
+            Color.black.opacity(0.15),
+            Color.black.opacity(0.55),
+          ],
+          startPoint: .top, endPoint: .bottom
+        )
+        .ignoresSafeArea()
+        .allowsHitTesting(false)
       } else {
         if colorScheme == .dark {
           LinearGradient(
