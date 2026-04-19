@@ -563,21 +563,30 @@ struct PatriotBackgroundView: View {
         let time = context.date.timeIntervalSinceReferenceDate
         let stripeH = size.height / 13.0
 
+        let twoPi: Double = 2.0 * .pi
+        let timePhase: Double = time * 0.6
+
         // Draw waving stripes
         for i in 0..<13 {
-          let y = CGFloat(i) * stripeH
+          let y: CGFloat = CGFloat(i) * stripeH
+          let iOffset: Double = Double(i) * 0.15
           var path = Path()
           path.move(to: CGPoint(x: 0, y: y))
           let steps = 40
           for s in 0...steps {
-            let x = size.width * CGFloat(s) / CGFloat(steps)
-            let wave = sin(x / size.width * 2.0 * .pi + time * 0.6 + Double(i) * 0.15) * 4.0
+            let x: CGFloat = size.width * CGFloat(s) / CGFloat(steps)
+            let xNorm: Double = Double(x / size.width)
+            let angle: Double = xNorm * twoPi + timePhase + iOffset
+            let wave: CGFloat = CGFloat(sin(angle) * 4.0)
             path.addLine(to: CGPoint(x: x, y: y + wave))
           }
           // Close the stripe rectangle
+          let iNextOffset: Double = Double(i + 1) * 0.15
           for s in stride(from: steps, through: 0, by: -1) {
-            let x = size.width * CGFloat(s) / CGFloat(steps)
-            let wave = sin(x / size.width * 2.0 * .pi + time * 0.6 + Double(i + 1) * 0.15) * 4.0
+            let x: CGFloat = size.width * CGFloat(s) / CGFloat(steps)
+            let xNorm: Double = Double(x / size.width)
+            let angle: Double = xNorm * twoPi + timePhase + iNextOffset
+            let wave: CGFloat = CGFloat(sin(angle) * 4.0)
             path.addLine(to: CGPoint(x: x, y: y + stripeH + wave))
           }
           path.closeSubpath()
@@ -585,22 +594,24 @@ struct PatriotBackgroundView: View {
         }
 
         // Blue canton
-        let cantonW = size.width * 0.4
-        let cantonH = stripeH * 7
-        let cantonWave = sin(time * 0.6) * 3.0
+        let cantonW: CGFloat = size.width * 0.4
+        let cantonH: CGFloat = stripeH * 7
+        let cantonWave: CGFloat = CGFloat(sin(timePhase) * 3.0)
         let cantonRect = CGRect(x: 0, y: cantonWave, width: cantonW, height: cantonH)
         ctx.fill(Path(cantonRect), with: .color(Color(red: 0.15, green: 0.2, blue: 0.55)))
 
         // Stars in canton (5x6 grid, simplified from 50)
         let starRows = 5
         let starCols = 6
-        let starSpacingX = cantonW / CGFloat(starCols + 1)
-        let starSpacingY = cantonH / CGFloat(starRows + 1)
+        let starSpacingX: CGFloat = cantonW / CGFloat(starCols + 1)
+        let starSpacingY: CGFloat = cantonH / CGFloat(starRows + 1)
+        let starTimePhase: Double = time * 0.5
         for row in 1...starRows {
           for col in 1...starCols {
-            let sx = starSpacingX * CGFloat(col)
-            let sy = starSpacingY * CGFloat(row) + cantonWave
-            let starWave = sin(time * 0.5 + Double(row + col) * 0.3) * 2.0
+            let sx: CGFloat = starSpacingX * CGFloat(col)
+            let sy: CGFloat = starSpacingY * CGFloat(row) + cantonWave
+            let starAngle: Double = starTimePhase + Double(row + col) * 0.3
+            let starWave: CGFloat = CGFloat(sin(starAngle) * 2.0)
             let starPath = starShape(
               center: CGPoint(x: sx, y: sy + starWave),
               points: 5,
@@ -621,7 +632,7 @@ struct PatriotBackgroundView: View {
     -> Path
   {
     var path = Path()
-    let angleStep = .pi / CGFloat(points)
+    let angleStep: CGFloat = .pi / CGFloat(points)
     for i in 0..<(points * 2) {
       let angle = CGFloat(i) * angleStep - .pi / 2
       let radius = i % 2 == 0 ? outerRadius : innerRadius
