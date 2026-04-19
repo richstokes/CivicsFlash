@@ -7,5 +7,5 @@ https://apps.apple.com/us/app/civics-flash/id6755638748
 
 ## Screenshot
 
-![Civics Flash screenshot](images/screenshot.png)
+<img src="images/screenshot.png" alt="Civics Flash screenshot" width="50%">
 
