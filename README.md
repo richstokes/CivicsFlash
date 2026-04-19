@@ -5,3 +5,7 @@ Flash card style app to help people prepare for the civics portion of the natura
 
 https://apps.apple.com/us/app/civics-flash/id6755638748
 
+## Screenshot
+
+![Civics Flash screenshot](images/screenshot.png)
+
