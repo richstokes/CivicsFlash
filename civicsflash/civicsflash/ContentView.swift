@@ -56,6 +56,39 @@ struct FlagManager {
   }
 }
 
+// MARK: - Theme Manager
+enum AppAppearance: String, CaseIterable {
+  case system = "System"
+  case light = "Light"
+  case dark = "Dark"
+
+  var colorScheme: ColorScheme? {
+    switch self {
+    case .system: return nil
+    case .light: return .light
+    case .dark: return .dark
+    }
+  }
+}
+
+final class ThemeManager: ObservableObject {
+  static let appearanceKey = "app_appearance"
+  static let patriotModeKey = "patriot_mode"
+
+  @Published var appearance: AppAppearance {
+    didSet { UserDefaults.standard.set(appearance.rawValue, forKey: Self.appearanceKey) }
+  }
+  @Published var patriotMode: Bool {
+    didSet { UserDefaults.standard.set(patriotMode, forKey: Self.patriotModeKey) }
+  }
+
+  init() {
+    let raw = UserDefaults.standard.string(forKey: Self.appearanceKey) ?? AppAppearance.system.rawValue
+    self.appearance = AppAppearance(rawValue: raw) ?? .system
+    self.patriotMode = UserDefaults.standard.bool(forKey: Self.patriotModeKey)
+  }
+}
+
 // MARK: - Settings / Overrides
 struct SettingsManager {
   static let governorKey = "setting_governor"
@@ -512,9 +545,133 @@ final class FlashcardViewModel: ObservableObject {
   }
 }
 
+// MARK: - Patriot Background
+struct PatriotBackgroundView: View {
+  @State private var phase: CGFloat = 0
+
+  private let stripeColors: [Color] = {
+    var colors: [Color] = []
+    for i in 0..<13 {
+      colors.append(i % 2 == 0 ? Color(red: 0.7, green: 0.15, blue: 0.15) : .white)
+    }
+    return colors
+  }()
+
+  var body: some View {
+    TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { context in
+      Canvas { ctx, size in
+        let time = context.date.timeIntervalSinceReferenceDate
+        let stripeH = size.height / 13.0
+
+        // Draw waving stripes
+        for i in 0..<13 {
+          let y = CGFloat(i) * stripeH
+          var path = Path()
+          path.move(to: CGPoint(x: 0, y: y))
+          let steps = 40
+          for s in 0...steps {
+            let x = size.width * CGFloat(s) / CGFloat(steps)
+            let wave = sin(x / size.width * 2.0 * .pi + time * 0.6 + Double(i) * 0.15) * 4.0
+            path.addLine(to: CGPoint(x: x, y: y + wave))
+          }
+          // Close the stripe rectangle
+          for s in stride(from: steps, through: 0, by: -1) {
+            let x = size.width * CGFloat(s) / CGFloat(steps)
+            let wave = sin(x / size.width * 2.0 * .pi + time * 0.6 + Double(i + 1) * 0.15) * 4.0
+            path.addLine(to: CGPoint(x: x, y: y + stripeH + wave))
+          }
+          path.closeSubpath()
+          ctx.fill(path, with: .color(stripeColors[i]))
+        }
+
+        // Blue canton
+        let cantonW = size.width * 0.4
+        let cantonH = stripeH * 7
+        let cantonWave = sin(time * 0.6) * 3.0
+        let cantonRect = CGRect(x: 0, y: cantonWave, width: cantonW, height: cantonH)
+        ctx.fill(Path(cantonRect), with: .color(Color(red: 0.15, green: 0.2, blue: 0.55)))
+
+        // Stars in canton (5x6 grid, simplified from 50)
+        let starRows = 5
+        let starCols = 6
+        let starSpacingX = cantonW / CGFloat(starCols + 1)
+        let starSpacingY = cantonH / CGFloat(starRows + 1)
+        for row in 1...starRows {
+          for col in 1...starCols {
+            let sx = starSpacingX * CGFloat(col)
+            let sy = starSpacingY * CGFloat(row) + cantonWave
+            let starWave = sin(time * 0.5 + Double(row + col) * 0.3) * 2.0
+            let starPath = starShape(
+              center: CGPoint(x: sx, y: sy + starWave),
+              points: 5,
+              innerRadius: 2.5,
+              outerRadius: 5.5
+            )
+            ctx.fill(starPath, with: .color(.white))
+          }
+        }
+      }
+    }
+    .opacity(0.18)
+    .ignoresSafeArea()
+    .allowsHitTesting(false)
+  }
+
+  private func starShape(center: CGPoint, points: Int, innerRadius: CGFloat, outerRadius: CGFloat)
+    -> Path
+  {
+    var path = Path()
+    let angleStep = .pi / CGFloat(points)
+    for i in 0..<(points * 2) {
+      let angle = CGFloat(i) * angleStep - .pi / 2
+      let radius = i % 2 == 0 ? outerRadius : innerRadius
+      let point = CGPoint(
+        x: center.x + cos(angle) * radius,
+        y: center.y + sin(angle) * radius
+      )
+      if i == 0 { path.move(to: point) } else { path.addLine(to: point) }
+    }
+    path.closeSubpath()
+    return path
+  }
+}
+
+// MARK: - Themed Background
+struct ThemedBackground: View {
+  @ObservedObject var theme: ThemeManager
+  @Environment(\.colorScheme) private var colorScheme
+
+  var body: some View {
+    ZStack {
+      if theme.patriotMode {
+        // Dark base behind the flag so the low-opacity flag art is visible
+        (colorScheme == .dark ? Color.black : Color(white: 0.95))
+          .ignoresSafeArea()
+        PatriotBackgroundView()
+      } else {
+        if colorScheme == .dark {
+          LinearGradient(
+            colors: [Color(red: 0.08, green: 0.05, blue: 0.2),
+                     Color(red: 0.05, green: 0.1, blue: 0.2),
+                     Color(red: 0.05, green: 0.15, blue: 0.15)],
+            startPoint: .topLeading, endPoint: .bottomTrailing
+          )
+          .ignoresSafeArea()
+        } else {
+          LinearGradient(
+            colors: [.indigo, .blue, .teal], startPoint: .topLeading, endPoint: .bottomTrailing
+          )
+          .ignoresSafeArea()
+        }
+      }
+    }
+  }
+}
+
 struct ContentView: View {
   @StateObject private var vm = FlashcardViewModel()
   @StateObject private var speechManager = SpeechManager()
+  @StateObject private var theme = ThemeManager()
   @State private var dragOffset: CGSize = .zero
   private let swipeThreshold: CGFloat = 80
 
@@ -522,10 +679,7 @@ struct ContentView: View {
 
   var body: some View {
     ZStack {
-      LinearGradient(
-        colors: [.indigo, .blue, .teal], startPoint: .topLeading, endPoint: .bottomTrailing
-      )
-      .ignoresSafeArea()
+      ThemedBackground(theme: theme)
 
       VStack(spacing: 16) {
         header
@@ -542,11 +696,12 @@ struct ContentView: View {
           .transition(.opacity.combined(with: .scale))
       }
     }
+    .preferredColorScheme(theme.appearance.colorScheme)
     .sheet(isPresented: $showSettings) {
       SettingsView(
         onSaved: {
           vm.reload()  // re-read overrides and rebuild deck
-        }, viewModel: vm)
+        }, viewModel: vm, theme: theme)
     }
   }
 
@@ -779,6 +934,7 @@ struct ContentView: View {
 struct SettingsView: View {
   var onSaved: () -> Void
   @ObservedObject var viewModel: FlashcardViewModel
+  @ObservedObject var theme: ThemeManager
   @Environment(\.dismiss) private var dismiss
   @State private var governor: String =
     UserDefaults.standard.string(forKey: SettingsManager.governorKey) ?? ""
@@ -798,6 +954,25 @@ struct SettingsView: View {
   var body: some View {
     NavigationStack {
       Form {
+        Section("Appearance") {
+          Picker("Theme", selection: $theme.appearance) {
+            ForEach(AppAppearance.allCases, id: \.self) { option in
+              Text(option.rawValue).tag(option)
+            }
+          }
+          .pickerStyle(.segmented)
+
+          Toggle(isOn: $theme.patriotMode) {
+            VStack(alignment: .leading, spacing: 4) {
+              Text("Patriot Theme")
+                .font(.body)
+              Text("Star-spangled banner background")
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+          }
+        }
+
         Section("Flagged Cards") {
           Toggle(
             isOn: Binding(
