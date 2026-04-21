@@ -838,34 +838,37 @@ struct ContentView: View {
             .fill(.ultraThinMaterial)
             .shadow(color: .black.opacity(0.2), radius: 20, x: 0, y: 12)
 
-          VStack(alignment: .leading, spacing: 16) {
-            categoryChip(card.category)
-            Text(card.question)
-              .font(.title2.weight(.semibold))
-              .foregroundStyle(.primary)
-              .multilineTextAlignment(.leading)
+          VStack(spacing: 0) {
+            ScrollView(.vertical, showsIndicators: false) {
+              VStack(alignment: .leading, spacing: 16) {
+                categoryChip(card.category)
+                Text(card.question)
+                  .font(.title2.weight(.semibold))
+                  .foregroundStyle(.primary)
+                  .multilineTextAlignment(.leading)
 
-            if vm.isRevealed {
-              VStack(alignment: .leading, spacing: 8) {
-                ForEach(card.answers, id: \.self) { ans in
-                  HStack(alignment: .top, spacing: 8) {
-                    Circle().fill(Color.accentColor).frame(width: 6, height: 6)
-                      .padding(.top, 8)
-                    Text(ans)
-                      .frame(maxWidth: .infinity, alignment: .leading)
+                if vm.isRevealed {
+                  VStack(alignment: .leading, spacing: 8) {
+                    ForEach(card.answers, id: \.self) { ans in
+                      HStack(alignment: .top, spacing: 8) {
+                        Circle().fill(Color.accentColor).frame(width: 6, height: 6)
+                          .padding(.top, 8)
+                        Text(ans)
+                          .frame(maxWidth: .infinity, alignment: .leading)
+                      }
+                    }
                   }
+                  .transition(.opacity.combined(with: .move(edge: .bottom)))
+                } else {
+                  Text("Tap card to reveal…")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
                 }
               }
-              .transition(.opacity.combined(with: .move(edge: .bottom)))
-            } else {
-              Text("Tap card to reveal…")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
+              .padding(24)
+              .padding(.bottom, 8)
             }
 
-            Spacer(minLength: 0)
-
-            // Flag button at bottom
             HStack {
               Spacer()
               Button {
@@ -881,8 +884,9 @@ struct ContentView: View {
               Spacer()
             }
             .padding(.top, 8)
+            .padding(.bottom, 16)
           }
-          .padding(24)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: 480)
         .onTapGesture { withAnimation(.spring()) { vm.toggleReveal() } }
