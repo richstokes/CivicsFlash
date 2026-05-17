@@ -142,7 +142,11 @@ struct SpeechSettingsManager {
   static let voiceIdentifierKey = "speech_voice_identifier"
   static let speechRateKey = "speech_rate"
   static let randomVoiceKey = "speech_random_voice"
+  static let answerDelayKey = "speech_answer_delay"
   static let defaultRate: Float = 0.46
+  static let defaultAnswerDelay: TimeInterval = 1.0
+  static let minAnswerDelay: TimeInterval = 0.0
+  static let maxAnswerDelay: TimeInterval = 6.0
 
   static func loadVoiceIdentifier() -> String? {
     UserDefaults.standard.string(forKey: voiceIdentifierKey)
@@ -167,6 +171,19 @@ struct SpeechSettingsManager {
 
   static func saveRandomVoice(_ value: Bool) {
     UserDefaults.standard.set(value, forKey: randomVoiceKey)
+  }
+
+  static func loadAnswerDelay() -> TimeInterval {
+    guard UserDefaults.standard.object(forKey: answerDelayKey) != nil else {
+      return defaultAnswerDelay
+    }
+    let delay = UserDefaults.standard.double(forKey: answerDelayKey)
+    return min(max(delay, minAnswerDelay), maxAnswerDelay)
+  }
+
+  static func saveAnswerDelay(_ delay: TimeInterval) {
+    let clamped = min(max(delay, minAnswerDelay), maxAnswerDelay)
+    UserDefaults.standard.set(clamped, forKey: answerDelayKey)
   }
 }
 
@@ -209,6 +226,7 @@ enum DataLoader {
 // MARK: - Speech Manager
 final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelegate {
   @Published private(set) var isActive = false
+  @Published private(set) var isPaused = false
   @Published private(set) var currentPhase: SpeechPhase = .idle
 
   enum SpeechPhase: Equatable {
@@ -219,10 +237,19 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     case pauseBeforeNext
   }
 
+  private enum PauseReason: Hashable {
+    case manual
+    case holdingCard
+  }
+
   private let synthesizer = AVSpeechSynthesizer()
   private weak var viewModel: FlashcardViewModel?
   private var currentCard: Card?
   private var pauseWorkItem: DispatchWorkItem?
+  private var pendingDelayAction: (() -> Void)?
+  private var pendingDelayDeadline: Date?
+  private var pendingDelayRemaining: TimeInterval?
+  private var pauseReasons: Set<PauseReason> = []
   private var shuffledVoices: [AVSpeechSynthesisVoice] = []
   private var voiceIndex: Int = 0
 
@@ -232,7 +259,11 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   func toggle(with vm: FlashcardViewModel) {
-    if isActive { stop() } else { start(with: vm) }
+    if isActive {
+      toggleManualPause()
+    } else {
+      start(with: vm)
+    }
   }
 
   func start(with vm: FlashcardViewModel) {
@@ -249,9 +280,45 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   func stop() {
     synthesizer.stopSpeaking(at: .immediate)
     cancelPendingWork()
+    pauseReasons.removeAll()
     isActive = false
+    isPaused = false
     currentPhase = .idle
     currentCard = nil
+  }
+
+  func pauseForCardHold(_ isHolding: Bool) {
+    if isHolding {
+      addPauseReason(.holdingCard)
+    } else {
+      removePauseReason(.holdingCard)
+    }
+  }
+
+  private func toggleManualPause() {
+    if pauseReasons.contains(.manual) {
+      removePauseReason(.manual)
+    } else {
+      addPauseReason(.manual)
+    }
+  }
+
+  private func addPauseReason(_ reason: PauseReason) {
+    guard isActive else { return }
+    let wasPaused = isPaused
+    pauseReasons.insert(reason)
+    isPaused = true
+    if !wasPaused {
+      pausePlayback()
+    }
+  }
+
+  private func removePauseReason(_ reason: PauseReason) {
+    guard isActive else { return }
+    pauseReasons.remove(reason)
+    guard pauseReasons.isEmpty else { return }
+    isPaused = false
+    resumePlayback()
   }
 
   private func speakCurrentCard() {
@@ -285,6 +352,9 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     utterance.rate = SpeechSettingsManager.loadSpeechRate()
     utterance.pitchMultiplier = 1.0
     synthesizer.speak(utterance)
+    if isPaused {
+      pausePlayback()
+    }
   }
 
   /// Advance to the next random voice for the next card
@@ -295,13 +365,65 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private func cancelPendingWork() {
     pauseWorkItem?.cancel()
     pauseWorkItem = nil
+    pendingDelayAction = nil
+    pendingDelayDeadline = nil
+    pendingDelayRemaining = nil
   }
 
   private func scheduleAfterDelay(_ delay: TimeInterval, action: @escaping () -> Void) {
     cancelPendingWork()
-    let work = DispatchWorkItem { action() }
+    pendingDelayAction = action
+    if isPaused {
+      pendingDelayRemaining = delay
+      return
+    }
+    schedulePendingDelay(after: delay)
+  }
+
+  private func schedulePendingDelay(after delay: TimeInterval) {
+    let clampedDelay = max(0, delay)
+    pendingDelayRemaining = clampedDelay
+    pendingDelayDeadline = Date().addingTimeInterval(clampedDelay)
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self, self.isActive, !self.isPaused else { return }
+      let action = self.pendingDelayAction
+      self.pauseWorkItem = nil
+      self.pendingDelayAction = nil
+      self.pendingDelayDeadline = nil
+      self.pendingDelayRemaining = nil
+      action?()
+    }
     pauseWorkItem = work
-    DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: work)
+    DispatchQueue.main.asyncAfter(deadline: .now() + clampedDelay, execute: work)
+  }
+
+  private func pausePlayback() {
+    if synthesizer.isSpeaking && !synthesizer.isPaused {
+      synthesizer.pauseSpeaking(at: .immediate)
+    }
+    pausePendingDelay()
+  }
+
+  private func resumePlayback() {
+    if synthesizer.isPaused {
+      synthesizer.continueSpeaking()
+    }
+    resumePendingDelay()
+  }
+
+  private func pausePendingDelay() {
+    guard pendingDelayAction != nil else { return }
+    if let deadline = pendingDelayDeadline {
+      pendingDelayRemaining = max(0, deadline.timeIntervalSinceNow)
+    }
+    pauseWorkItem?.cancel()
+    pauseWorkItem = nil
+    pendingDelayDeadline = nil
+  }
+
+  private func resumePendingDelay() {
+    guard pendingDelayAction != nil, let remaining = pendingDelayRemaining else { return }
+    schedulePendingDelay(after: remaining)
   }
 
   // MARK: AVSpeechSynthesizerDelegate
@@ -313,7 +435,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     switch currentPhase {
     case .speakingQuestion:
       currentPhase = .pauseBeforeAnswer
-      scheduleAfterDelay(1.0) { [weak self] in
+      scheduleAfterDelay(SpeechSettingsManager.loadAnswerDelay()) { [weak self] in
         guard let self = self, self.isActive else { return }
         withAnimation(.spring()) { vm.isRevealed = true }
         self.currentPhase = .speakingAnswer
@@ -743,7 +865,7 @@ struct ContentView: View {
         header
         Spacer(minLength: 8)
         card
-          .allowsHitTesting(!vm.deckComplete && !speechManager.isActive)
+          .allowsHitTesting(!vm.deckComplete)
         Spacer(minLength: 16)
         footer
       }
@@ -792,14 +914,14 @@ struct ContentView: View {
         Button {
           speechManager.toggle(with: vm)
         } label: {
-          Image(systemName: speechManager.isActive ? "stop.fill" : "speaker.wave.2.fill")
+          Image(systemName: readAloudIconName)
             .font(.subheadline.weight(.medium))
             .frame(width: 20, height: 20)
         }
         .buttonStyle(.bordered)
-        .tint(speechManager.isActive ? .orange : .white)
+        .tint(readAloudTint)
         .controlSize(.regular)
-        .accessibilityLabel(speechManager.isActive ? "Stop reading" : "Read aloud")
+        .accessibilityLabel(readAloudAccessibilityLabel)
 
         Button {
           speechManager.stop()
@@ -828,6 +950,21 @@ struct ContentView: View {
         .accessibilityLabel("Settings")
       }
     }
+  }
+
+  private var readAloudIconName: String {
+    if !speechManager.isActive { return "speaker.wave.2.fill" }
+    return speechManager.isPaused ? "play.fill" : "pause.fill"
+  }
+
+  private var readAloudTint: Color {
+    if !speechManager.isActive { return .white }
+    return speechManager.isPaused ? .green : .orange
+  }
+
+  private var readAloudAccessibilityLabel: String {
+    if !speechManager.isActive { return "Read aloud" }
+    return speechManager.isPaused ? "Resume reading" : "Pause reading"
   }
 
   private var card: some View {
@@ -889,14 +1026,22 @@ struct ContentView: View {
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: 480)
-        .onTapGesture { withAnimation(.spring()) { vm.toggleReveal() } }
+        .onTapGesture {
+          guard !speechManager.isActive else { return }
+          withAnimation(.spring()) { vm.toggleReveal() }
+        }
         .offset(dragOffset)
         .gesture(
           DragGesture()
             .onChanged { value in
+              guard !speechManager.isActive else { return }
               dragOffset = CGSize(width: value.translation.width, height: 0)
             }
             .onEnded { value in
+              guard !speechManager.isActive else {
+                dragOffset = .zero
+                return
+              }
               let shouldSwipe = abs(value.translation.width) > swipeThreshold
               let isSwipeRight = value.translation.width > 0
               let isSwipeLeft = value.translation.width < 0
@@ -922,6 +1067,15 @@ struct ContentView: View {
               }
             }
         )
+        .onLongPressGesture(
+          minimumDuration: 0.1,
+          maximumDistance: 50,
+          pressing: { isPressing in
+            guard speechManager.isActive else { return }
+            speechManager.pauseForCardHold(isPressing)
+          },
+          perform: {}
+        )
         .animation(.easeInOut, value: vm.isRevealed)
         .id(card.id)
       } else {
@@ -944,9 +1098,9 @@ struct ContentView: View {
     Group {
       if speechManager.isActive {
         HStack(spacing: 12) {
-          Image(systemName: "speaker.wave.2.fill")
-            .foregroundStyle(.orange)
-          Text("Reading aloud\u{2026} tap Stop to end")
+          Image(systemName: speechManager.isPaused ? "pause.fill" : "speaker.wave.2.fill")
+            .foregroundStyle(speechManager.isPaused ? .green : .orange)
+          Text(speechManager.isPaused ? "Read aloud paused" : "Reading aloud\u{2026} hold card to pause")
             .font(.footnote)
             .foregroundStyle(.white.opacity(0.9))
         }
@@ -1010,6 +1164,7 @@ struct SettingsView: View {
   @State private var selectedVoiceIdentifier: String =
     SpeechSettingsManager.loadVoiceIdentifier() ?? ""
   @State private var speechRate: Float = SpeechSettingsManager.loadSpeechRate()
+  @State private var answerDelay: TimeInterval = SpeechSettingsManager.loadAnswerDelay()
   @State private var randomVoice: Bool = SpeechSettingsManager.loadRandomVoice()
   private let availableVoices = SpeechManager.availableEnglishVoices()
 
@@ -1102,6 +1257,29 @@ struct SettingsView: View {
                 .foregroundColor(.secondary)
               Slider(value: $speechRate, in: 0.3...0.6, step: 0.02)
               Image(systemName: "hare")
+                .foregroundColor(.secondary)
+            }
+          }
+
+          VStack(alignment: .leading, spacing: 4) {
+            HStack {
+              Text("Answer Delay")
+                .font(.caption)
+                .foregroundColor(.secondary)
+              Spacer()
+              Text(formatAnswerDelay(answerDelay))
+                .font(.caption)
+                .foregroundColor(.secondary)
+            }
+            HStack {
+              Image(systemName: "timer")
+                .foregroundColor(.secondary)
+              Slider(
+                value: $answerDelay,
+                in: SpeechSettingsManager.minAnswerDelay...SpeechSettingsManager.maxAnswerDelay,
+                step: 0.25
+              )
+              Image(systemName: "hourglass")
                 .foregroundColor(.secondary)
             }
           }
@@ -1198,9 +1376,14 @@ struct SettingsView: View {
     SpeechSettingsManager.saveVoiceIdentifier(
       selectedVoiceIdentifier.isEmpty ? nil : selectedVoiceIdentifier)
     SpeechSettingsManager.saveSpeechRate(speechRate)
+    SpeechSettingsManager.saveAnswerDelay(answerDelay)
     SpeechSettingsManager.saveRandomVoice(randomVoice)
     onSaved()
     dismiss()
+  }
+
+  private func formatAnswerDelay(_ delay: TimeInterval) -> String {
+    delay == 1.0 ? "1 second" : String(format: "%.2g seconds", delay)
   }
 }
 
