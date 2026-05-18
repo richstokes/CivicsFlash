@@ -240,6 +240,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private enum PauseReason: Hashable {
     case manual
     case holdingCard
+    case appLifecycle
   }
 
   private let synthesizer = AVSpeechSynthesizer()
@@ -252,6 +253,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private var pauseReasons: Set<PauseReason> = []
   private var shuffledVoices: [AVSpeechSynthesisVoice] = []
   private var voiceIndex: Int = 0
+  private let nextCardDelay: TimeInterval = 2.5
 
   override init() {
     super.init()
@@ -278,13 +280,13 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   func stop() {
-    synthesizer.stopSpeaking(at: .immediate)
-    cancelPendingWork()
-    pauseReasons.removeAll()
     isActive = false
     isPaused = false
     currentPhase = .idle
     currentCard = nil
+    cancelPendingWork()
+    pauseReasons.removeAll()
+    synthesizer.stopSpeaking(at: .immediate)
   }
 
   func pauseForCardHold(_ isHolding: Bool) {
@@ -292,6 +294,19 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
       addPauseReason(.holdingCard)
     } else {
       removePauseReason(.holdingCard)
+    }
+  }
+
+  func handleScenePhase(_ phase: ScenePhase) {
+    switch phase {
+    case .active:
+      pauseReasons.remove(.holdingCard)
+      removePauseReason(.appLifecycle)
+      recoverIfStalled()
+    case .inactive, .background:
+      addPauseReason(.appLifecycle)
+    @unknown default:
+      break
     }
   }
 
@@ -330,6 +345,10 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     currentPhase = .speakingQuestion
     vm.isRevealed = false
     speak(card.question)
+  }
+
+  private func answerText(for card: Card) -> String {
+    card.answers.prefix(3).joined(separator: ". ")
   }
 
   private func speak(_ text: String) {
@@ -406,9 +425,10 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
   private func resumePlayback() {
     if synthesizer.isPaused {
-      synthesizer.continueSpeaking()
+      _ = synthesizer.continueSpeaking()
     }
     resumePendingDelay()
+    recoverIfStalled()
   }
 
   private func pausePendingDelay() {
@@ -426,6 +446,96 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     schedulePendingDelay(after: remaining)
   }
 
+  private func speakAnswer(for card: Card, vm: FlashcardViewModel) {
+    withAnimation(.spring()) { vm.isRevealed = true }
+    currentPhase = .speakingAnswer
+    let answersText = answerText(for: card)
+    guard !answersText.isEmpty else {
+      scheduleNextCard()
+      return
+    }
+    speak(answersText)
+  }
+
+  private func scheduleAnswer(for card: Card, vm: FlashcardViewModel) {
+    currentPhase = .pauseBeforeAnswer
+    scheduleAfterDelay(SpeechSettingsManager.loadAnswerDelay()) { [weak self, weak vm] in
+      guard let self = self, self.isActive, let vm = vm else { return }
+      self.speakAnswer(for: card, vm: vm)
+    }
+  }
+
+  private func scheduleNextCard() {
+    currentPhase = .pauseBeforeNext
+    scheduleAfterDelay(nextCardDelay) { [weak self] in
+      guard let self = self, self.isActive, let vm = self.viewModel else { return }
+      self.currentPhase = .idle
+      vm.nextCard(autoReveal: false)
+      if vm.deckComplete {
+        self.stop()
+      } else {
+        self.advanceVoice()
+        self.speakCurrentCard()
+      }
+    }
+  }
+
+  private func recoverPendingDelayIfNeeded() -> Bool {
+    guard pendingDelayAction != nil else { return false }
+    if pauseWorkItem == nil {
+      schedulePendingDelay(after: pendingDelayRemaining ?? 0)
+    }
+    return true
+  }
+
+  private func recoverIfStalled() {
+    guard isActive, !isPaused else { return }
+    if synthesizer.isPaused {
+      _ = synthesizer.continueSpeaking()
+    }
+    if synthesizer.isSpeaking { return }
+    if recoverPendingDelayIfNeeded() { return }
+
+    guard let vm = viewModel else {
+      stop()
+      return
+    }
+
+    switch currentPhase {
+    case .speakingQuestion:
+      if let card = currentCard ?? vm.current {
+        currentCard = card
+        speak(card.question)
+      } else {
+        stop()
+      }
+    case .pauseBeforeAnswer:
+      if let card = currentCard ?? vm.current {
+        currentCard = card
+        scheduleAnswer(for: card, vm: vm)
+      } else {
+        stop()
+      }
+    case .speakingAnswer:
+      if let card = currentCard ?? vm.current {
+        currentCard = card
+        speakAnswer(for: card, vm: vm)
+      } else {
+        stop()
+      }
+    case .pauseBeforeNext:
+      scheduleNextCard()
+    case .idle:
+      if vm.deckComplete {
+        stop()
+      } else if let _ = vm.current {
+        speakCurrentCard()
+      } else {
+        stop()
+      }
+    }
+  }
+
   // MARK: AVSpeechSynthesizerDelegate
   func speechSynthesizer(
     _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
@@ -434,29 +544,20 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
     switch currentPhase {
     case .speakingQuestion:
-      currentPhase = .pauseBeforeAnswer
-      scheduleAfterDelay(SpeechSettingsManager.loadAnswerDelay()) { [weak self] in
-        guard let self = self, self.isActive else { return }
-        withAnimation(.spring()) { vm.isRevealed = true }
-        self.currentPhase = .speakingAnswer
-        let answersText = card.answers.prefix(2).joined(separator: ". ")
-        self.speak(answersText)
-      }
+      scheduleAnswer(for: card, vm: vm)
     case .speakingAnswer:
-      currentPhase = .pauseBeforeNext
-      scheduleAfterDelay(2.5) { [weak self] in
-        guard let self = self, self.isActive, let vm = self.viewModel else { return }
-        self.currentPhase = .idle
-        vm.nextCard(autoReveal: false)
-        if vm.deckComplete {
-          self.stop()
-        } else {
-          self.advanceVoice()
-          self.speakCurrentCard()
-        }
-      }
+      scheduleNextCard()
     default:
       break
+    }
+  }
+
+  func speechSynthesizer(
+    _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
+  ) {
+    guard isActive, !isPaused else { return }
+    DispatchQueue.main.async { [weak self] in
+      self?.recoverIfStalled()
     }
   }
 
@@ -852,6 +953,7 @@ struct ContentView: View {
   @StateObject private var vm = FlashcardViewModel()
   @StateObject private var speechManager = SpeechManager()
   @StateObject private var theme = ThemeManager()
+  @Environment(\.scenePhase) private var scenePhase
   @State private var dragOffset: CGSize = .zero
   private let swipeThreshold: CGFloat = 80
 
@@ -877,6 +979,9 @@ struct ContentView: View {
       }
     }
     .preferredColorScheme(theme.appearance.colorScheme)
+    .onChange(of: scenePhase) { _, phase in
+      speechManager.handleScenePhase(phase)
+    }
     .sheet(isPresented: $showSettings) {
       SettingsView(
         onSaved: {
@@ -1076,6 +1181,9 @@ struct ContentView: View {
           },
           perform: {}
         )
+        .onDisappear {
+          speechManager.pauseForCardHold(false)
+        }
         .animation(.easeInOut, value: vm.isRevealed)
         .id(card.id)
       } else {
