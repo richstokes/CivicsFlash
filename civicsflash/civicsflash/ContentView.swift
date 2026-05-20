@@ -243,9 +243,17 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     case appLifecycle
   }
 
+  private enum UtteranceKind: Equatable {
+    case question(cardID: Int)
+    case answer(cardID: Int)
+  }
+
   private let synthesizer = AVSpeechSynthesizer()
   private weak var viewModel: FlashcardViewModel?
   private var currentCard: Card?
+  private var activeUtterance: AVSpeechUtterance?
+  private var activeUtteranceKind: UtteranceKind?
+  private var recoveryWorkItem: DispatchWorkItem?
   private var pauseWorkItem: DispatchWorkItem?
   private var pendingDelayAction: (() -> Void)?
   private var pendingDelayDeadline: Date?
@@ -254,6 +262,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private var shuffledVoices: [AVSpeechSynthesisVoice] = []
   private var voiceIndex: Int = 0
   private let nextCardDelay: TimeInterval = 2.5
+  private let recoveryDelay: TimeInterval = 0.7
 
   override init() {
     super.init()
@@ -302,7 +311,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     case .active:
       pauseReasons.remove(.holdingCard)
       removePauseReason(.appLifecycle)
-      recoverIfStalled()
+      scheduleStallRecovery()
     case .inactive, .background:
       addPauseReason(.appLifecycle)
     @unknown default:
@@ -344,14 +353,14 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     currentCard = card
     currentPhase = .speakingQuestion
     vm.isRevealed = false
-    speak(card.question)
+    speak(card.question, kind: .question(cardID: card.id))
   }
 
   private func answerText(for card: Card) -> String {
     card.answers.prefix(3).joined(separator: ". ")
   }
 
-  private func speak(_ text: String) {
+  private func speak(_ text: String, kind: UtteranceKind) {
     let cleaned =
       text.replacingOccurrences(
         of: "\\s*\\(\\d+\\)", with: "", options: .regularExpression)
@@ -370,6 +379,8 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     }
     utterance.rate = SpeechSettingsManager.loadSpeechRate()
     utterance.pitchMultiplier = 1.0
+    activeUtterance = utterance
+    activeUtteranceKind = kind
     synthesizer.speak(utterance)
     if isPaused {
       pausePlayback()
@@ -383,10 +394,14 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
   private func cancelPendingWork() {
     pauseWorkItem?.cancel()
+    recoveryWorkItem?.cancel()
     pauseWorkItem = nil
+    recoveryWorkItem = nil
     pendingDelayAction = nil
     pendingDelayDeadline = nil
     pendingDelayRemaining = nil
+    activeUtterance = nil
+    activeUtteranceKind = nil
   }
 
   private func scheduleAfterDelay(_ delay: TimeInterval, action: @escaping () -> Void) {
@@ -424,11 +439,14 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   private func resumePlayback() {
+    var resumedSpeech = false
     if synthesizer.isPaused {
-      _ = synthesizer.continueSpeaking()
+      resumedSpeech = synthesizer.continueSpeaking()
     }
     resumePendingDelay()
-    recoverIfStalled()
+    if !resumedSpeech {
+      scheduleStallRecovery()
+    }
   }
 
   private func pausePendingDelay() {
@@ -454,7 +472,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
       scheduleNextCard()
       return
     }
-    speak(answersText)
+    speak(answersText, kind: .answer(cardID: card.id))
   }
 
   private func scheduleAnswer(for card: Card, vm: FlashcardViewModel) {
@@ -488,10 +506,23 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     return true
   }
 
+  private func scheduleStallRecovery() {
+    recoveryWorkItem?.cancel()
+    let work = DispatchWorkItem { [weak self] in
+      guard let self = self else { return }
+      self.recoveryWorkItem = nil
+      self.recoverIfStalled()
+    }
+    recoveryWorkItem = work
+    DispatchQueue.main.asyncAfter(deadline: .now() + recoveryDelay, execute: work)
+  }
+
   private func recoverIfStalled() {
     guard isActive, !isPaused else { return }
     if synthesizer.isPaused {
-      _ = synthesizer.continueSpeaking()
+      if synthesizer.continueSpeaking() {
+        return
+      }
     }
     if synthesizer.isSpeaking { return }
     if recoverPendingDelayIfNeeded() { return }
@@ -505,7 +536,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     case .speakingQuestion:
       if let card = currentCard ?? vm.current {
         currentCard = card
-        speak(card.question)
+        speak(card.question, kind: .question(cardID: card.id))
       } else {
         stop()
       }
@@ -540,12 +571,19 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   func speechSynthesizer(
     _ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance
   ) {
-    guard isActive, let card = currentCard, let vm = viewModel else { return }
+    guard isActive, utterance === activeUtterance,
+      let utteranceKind = activeUtteranceKind,
+      let card = currentCard,
+      let vm = viewModel
+    else { return }
 
-    switch currentPhase {
-    case .speakingQuestion:
+    activeUtterance = nil
+    activeUtteranceKind = nil
+
+    switch utteranceKind {
+    case .question(let cardID) where currentPhase == .speakingQuestion && card.id == cardID:
       scheduleAnswer(for: card, vm: vm)
-    case .speakingAnswer:
+    case .answer(let cardID) where currentPhase == .speakingAnswer && card.id == cardID:
       scheduleNextCard()
     default:
       break
@@ -555,9 +593,12 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   func speechSynthesizer(
     _ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance
   ) {
+    guard utterance === activeUtterance else { return }
+    activeUtterance = nil
+    activeUtteranceKind = nil
     guard isActive, !isPaused else { return }
     DispatchQueue.main.async { [weak self] in
-      self?.recoverIfStalled()
+      self?.scheduleStallRecovery()
     }
   }
 
