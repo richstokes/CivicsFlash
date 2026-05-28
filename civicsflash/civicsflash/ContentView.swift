@@ -284,7 +284,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     // Pre-shuffle voices for random cycling
     shuffledVoices = SpeechManager.availableEnglishVoices().shuffled()
     voiceIndex = 0
-    vm.resetDeck(prioritizeFlagged: true)
+    vm.resetDeck()
     speakCurrentCard()
   }
 
@@ -668,7 +668,7 @@ final class FlashcardViewModel: ObservableObject {
     resetDeck()
   }
 
-  func resetDeck(prioritizeFlagged: Bool = false) {
+  func resetDeck() {
     cancelAutoReveal()
     deckComplete = false
     isRevealed = false
@@ -679,14 +679,7 @@ final class FlashcardViewModel: ObservableObject {
       ? allCards.filter { flaggedCardIDs.contains($0.id) }
       : allCards
 
-    if prioritizeFlagged && !showFlaggedOnly && !flaggedCardIDs.isEmpty {
-      // Flagged cards at end of array so they are popped first by popLast()
-      let rest = cardsToUse.filter { !flaggedCardIDs.contains($0.id) }.shuffled()
-      let flagged = cardsToUse.filter { flaggedCardIDs.contains($0.id) }.shuffled()
-      deck = rest + flagged
-    } else {
-      deck = cardsToUse.shuffled()
-    }
+    deck = cardsToUse.shuffled()
     history = []
     currentIndex = -1
     nextCard()
