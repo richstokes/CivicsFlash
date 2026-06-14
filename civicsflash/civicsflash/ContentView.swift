@@ -240,7 +240,6 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private enum PauseReason: Hashable {
     case manual
     case holdingCard
-    case appLifecycle
   }
 
   private enum UtteranceKind: Equatable {
@@ -249,6 +248,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   private let synthesizer = AVSpeechSynthesizer()
+  private let audioSession = AVAudioSession.sharedInstance()
   private weak var viewModel: FlashcardViewModel?
   private var currentCard: Card?
   private var activeUtterance: AVSpeechUtterance?
@@ -279,6 +279,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
   func start(with vm: FlashcardViewModel) {
     stop()
+    configureAudioSession()
     viewModel = vm
     isActive = true
     // Pre-shuffle voices for random cycling
@@ -296,6 +297,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     cancelPendingWork()
     pauseReasons.removeAll()
     synthesizer.stopSpeaking(at: .immediate)
+    deactivateAudioSession()
   }
 
   func pauseForCardHold(_ isHolding: Bool) {
@@ -310,10 +312,14 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     switch phase {
     case .active:
       pauseReasons.remove(.holdingCard)
-      removePauseReason(.appLifecycle)
-      scheduleStallRecovery()
+      if isActive {
+        configureAudioSession()
+        scheduleStallRecovery()
+      }
     case .inactive, .background:
-      addPauseReason(.appLifecycle)
+      if isActive {
+        configureAudioSession()
+      }
     @unknown default:
       break
     }
@@ -361,6 +367,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   private func speak(_ text: String, kind: UtteranceKind) {
+    configureAudioSession()
     let cleaned =
       text.replacingOccurrences(
         of: "\\s*\\(\\d+\\)", with: "", options: .regularExpression)
@@ -384,6 +391,23 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     synthesizer.speak(utterance)
     if isPaused {
       pausePlayback()
+    }
+  }
+
+  private func configureAudioSession() {
+    do {
+      try audioSession.setCategory(.playback, mode: .spokenAudio)
+      try audioSession.setActive(true)
+    } catch {
+      print("Could not activate read-aloud audio session: \(error)")
+    }
+  }
+
+  private func deactivateAudioSession() {
+    do {
+      try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+    } catch {
+      print("Could not deactivate read-aloud audio session: \(error)")
     }
   }
 
