@@ -8,7 +8,9 @@
 import AVFoundation
 import Combine
 import Foundation
+import MediaPlayer
 import SwiftUI
+import UIKit
 
 // MARK: - Data models and loader
 struct QuestionBank: Codable { let categories: [QuestionCategory] }
@@ -240,6 +242,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private enum PauseReason: Hashable {
     case manual
     case holdingCard
+    case audioInterruption
   }
 
   private enum UtteranceKind: Equatable {
@@ -261,12 +264,24 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   private var pauseReasons: Set<PauseReason> = []
   private var shuffledVoices: [AVSpeechSynthesisVoice] = []
   private var voiceIndex: Int = 0
+  private var audioSessionIsActive = false
+  private var remoteCommandHandlers: [(command: MPRemoteCommand, target: Any)] = []
+  private var delayBackgroundTask: UIBackgroundTaskIdentifier = .invalid
+  private var audioSessionInterruptionObserver: NSObjectProtocol?
   private let nextCardDelay: TimeInterval = 2.5
   private let recoveryDelay: TimeInterval = 0.7
 
   override init() {
     super.init()
+    synthesizer.usesApplicationAudioSession = true
     synthesizer.delegate = self
+    observeAudioSessionInterruptions()
+  }
+
+  deinit {
+    if let observer = audioSessionInterruptionObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
   }
 
   func toggle(with vm: FlashcardViewModel) {
@@ -286,6 +301,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     shuffledVoices = SpeechManager.availableEnglishVoices().shuffled()
     voiceIndex = 0
     vm.resetDeck()
+    beginRemoteControlSession()
     speakCurrentCard()
   }
 
@@ -297,6 +313,9 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     cancelPendingWork()
     pauseReasons.removeAll()
     synthesizer.stopSpeaking(at: .immediate)
+    endDelayBackgroundTask()
+    endRemoteControlSession()
+    clearNowPlayingInfo()
     deactivateAudioSession()
   }
 
@@ -311,14 +330,16 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   func handleScenePhase(_ phase: ScenePhase) {
     switch phase {
     case .active:
-      pauseReasons.remove(.holdingCard)
+      if pauseReasons.contains(.holdingCard) {
+        removePauseReason(.holdingCard)
+      }
       if isActive {
-        configureAudioSession()
+        updateNowPlayingInfo()
         scheduleStallRecovery()
       }
     case .inactive, .background:
       if isActive {
-        configureAudioSession()
+        updateNowPlayingInfo()
       }
     @unknown default:
       break
@@ -341,14 +362,17 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     if !wasPaused {
       pausePlayback()
     }
+    updateNowPlayingInfo()
   }
 
   private func removePauseReason(_ reason: PauseReason) {
     guard isActive else { return }
+    guard pauseReasons.contains(reason) else { return }
     pauseReasons.remove(reason)
     guard pauseReasons.isEmpty else { return }
     isPaused = false
     resumePlayback()
+    updateNowPlayingInfo()
   }
 
   private func speakCurrentCard() {
@@ -388,6 +412,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     utterance.pitchMultiplier = 1.0
     activeUtterance = utterance
     activeUtteranceKind = kind
+    updateNowPlayingInfo()
     synthesizer.speak(utterance)
     if isPaused {
       pausePlayback()
@@ -395,20 +420,202 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
   }
 
   private func configureAudioSession() {
+    guard !audioSessionIsActive else { return }
     do {
-      try audioSession.setCategory(.playback, mode: .spokenAudio)
+      try audioSession.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers])
       try audioSession.setActive(true)
+      audioSessionIsActive = true
+      UIApplication.shared.beginReceivingRemoteControlEvents()
     } catch {
       print("Could not activate read-aloud audio session: \(error)")
     }
   }
 
   private func deactivateAudioSession() {
+    UIApplication.shared.endReceivingRemoteControlEvents()
+    guard audioSessionIsActive else { return }
     do {
       try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+      audioSessionIsActive = false
     } catch {
       print("Could not deactivate read-aloud audio session: \(error)")
     }
+  }
+
+  private func observeAudioSessionInterruptions() {
+    audioSessionInterruptionObserver = NotificationCenter.default.addObserver(
+      forName: AVAudioSession.interruptionNotification,
+      object: audioSession,
+      queue: .main
+    ) { [weak self] notification in
+      let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
+      let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt
+      Task { @MainActor [weak self] in
+        self?.handleAudioSessionInterruption(typeValue: typeValue, optionsValue: optionsValue)
+      }
+    }
+  }
+
+  private func handleAudioSessionInterruption(typeValue: UInt?, optionsValue: UInt?) {
+    guard let typeValue,
+      let type = AVAudioSession.InterruptionType(rawValue: typeValue)
+    else { return }
+
+    switch type {
+    case .began:
+      audioSessionIsActive = false
+      guard isActive else { return }
+      addPauseReason(.audioInterruption)
+    case .ended:
+      guard isActive else { return }
+      configureAudioSession()
+      let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue ?? 0)
+      if options.contains(.shouldResume) {
+        removePauseReason(.audioInterruption)
+      } else {
+        pauseReasons.insert(.manual)
+        removePauseReason(.audioInterruption)
+        updateNowPlayingInfo()
+      }
+    @unknown default:
+      break
+    }
+  }
+
+  private func beginRemoteControlSession() {
+    guard remoteCommandHandlers.isEmpty else {
+      updateRemoteCommandState()
+      return
+    }
+
+    let commandCenter = MPRemoteCommandCenter.shared()
+    commandCenter.playCommand.isEnabled = true
+    commandCenter.pauseCommand.isEnabled = true
+    commandCenter.togglePlayPauseCommand.isEnabled = true
+    commandCenter.nextTrackCommand.isEnabled = false
+    commandCenter.previousTrackCommand.isEnabled = false
+    commandCenter.changePlaybackPositionCommand.isEnabled = false
+
+    let playTarget = commandCenter.playCommand.addTarget { [weak self] _ in
+      guard let self else { return .commandFailed }
+      Task { @MainActor [self] in
+        self.resumeFromRemoteCommand()
+      }
+      return .success
+    }
+    let pauseTarget = commandCenter.pauseCommand.addTarget { [weak self] _ in
+      guard let self else { return .commandFailed }
+      Task { @MainActor [self] in
+        self.pauseFromRemoteCommand()
+      }
+      return .success
+    }
+    let toggleTarget = commandCenter.togglePlayPauseCommand.addTarget { [weak self] _ in
+      guard let self else { return .commandFailed }
+      Task { @MainActor [self] in
+        self.toggleFromRemoteCommand()
+      }
+      return .success
+    }
+
+    remoteCommandHandlers = [
+      (commandCenter.playCommand, playTarget),
+      (commandCenter.pauseCommand, pauseTarget),
+      (commandCenter.togglePlayPauseCommand, toggleTarget),
+    ]
+    updateRemoteCommandState()
+  }
+
+  private func endRemoteControlSession() {
+    for handler in remoteCommandHandlers {
+      handler.command.removeTarget(handler.target)
+    }
+    remoteCommandHandlers.removeAll()
+
+    let commandCenter = MPRemoteCommandCenter.shared()
+    commandCenter.playCommand.isEnabled = false
+    commandCenter.pauseCommand.isEnabled = false
+    commandCenter.togglePlayPauseCommand.isEnabled = false
+  }
+
+  private func pauseFromRemoteCommand() {
+    guard isActive else { return }
+    addPauseReason(.manual)
+  }
+
+  private func resumeFromRemoteCommand() {
+    guard isActive else { return }
+    removePauseReason(.manual)
+  }
+
+  private func toggleFromRemoteCommand() {
+    guard isActive else { return }
+    toggleManualPause()
+  }
+
+  private func updateRemoteCommandState() {
+    let commandCenter = MPRemoteCommandCenter.shared()
+    commandCenter.playCommand.isEnabled = isActive && isPaused
+    commandCenter.pauseCommand.isEnabled = isActive && !isPaused
+    commandCenter.togglePlayPauseCommand.isEnabled = isActive
+  }
+
+  private func nowPlayingTitle() -> String {
+    guard let card = currentCard else { return "Read Aloud" }
+    switch currentPhase {
+    case .speakingAnswer:
+      return "Answer: \(answerText(for: card))"
+    case .pauseBeforeAnswer:
+      return "Question: \(card.question)"
+    case .pauseBeforeNext:
+      return "Next question coming up"
+    case .speakingQuestion, .idle:
+      return "Question: \(card.question)"
+    }
+  }
+
+  private func updateNowPlayingInfo() {
+    guard isActive else {
+      clearNowPlayingInfo()
+      return
+    }
+
+    var info: [String: Any] = [
+      MPNowPlayingInfoPropertyMediaType: MPNowPlayingInfoMediaType.audio.rawValue,
+      MPMediaItemPropertyArtist: "Civics Flash",
+      MPMediaItemPropertyAlbumTitle: currentCard?.category ?? "Read Aloud",
+      MPMediaItemPropertyTitle: nowPlayingTitle(),
+      MPNowPlayingInfoPropertyPlaybackRate: isPaused ? 0.0 : 1.0,
+      MPNowPlayingInfoPropertyIsLiveStream: true,
+    ]
+
+    if let card = currentCard {
+      info[MPMediaItemPropertyPersistentID] = card.id
+    }
+
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = info
+    MPNowPlayingInfoCenter.default().playbackState = isPaused ? .paused : .playing
+    updateRemoteCommandState()
+  }
+
+  private func clearNowPlayingInfo() {
+    MPNowPlayingInfoCenter.default().nowPlayingInfo = nil
+    MPNowPlayingInfoCenter.default().playbackState = .stopped
+  }
+
+  private func beginDelayBackgroundTask() {
+    guard delayBackgroundTask == .invalid else { return }
+    delayBackgroundTask = UIApplication.shared.beginBackgroundTask(withName: "ReadAloudDelay") {
+      Task { @MainActor [weak self] in
+        self?.endDelayBackgroundTask()
+      }
+    }
+  }
+
+  private func endDelayBackgroundTask() {
+    guard delayBackgroundTask != .invalid else { return }
+    UIApplication.shared.endBackgroundTask(delayBackgroundTask)
+    delayBackgroundTask = .invalid
   }
 
   /// Advance to the next random voice for the next card
@@ -426,6 +633,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     pendingDelayRemaining = nil
     activeUtterance = nil
     activeUtteranceKind = nil
+    endDelayBackgroundTask()
   }
 
   private func scheduleAfterDelay(_ delay: TimeInterval, action: @escaping () -> Void) {
@@ -442,8 +650,11 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     let clampedDelay = max(0, delay)
     pendingDelayRemaining = clampedDelay
     pendingDelayDeadline = Date().addingTimeInterval(clampedDelay)
+    beginDelayBackgroundTask()
     let work = DispatchWorkItem { [weak self] in
-      guard let self = self, self.isActive, !self.isPaused else { return }
+      guard let self = self else { return }
+      self.endDelayBackgroundTask()
+      guard self.isActive, !self.isPaused else { return }
       let action = self.pendingDelayAction
       self.pauseWorkItem = nil
       self.pendingDelayAction = nil
@@ -481,6 +692,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
     pauseWorkItem?.cancel()
     pauseWorkItem = nil
     pendingDelayDeadline = nil
+    endDelayBackgroundTask()
   }
 
   private func resumePendingDelay() {
@@ -501,6 +713,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
   private func scheduleAnswer(for card: Card, vm: FlashcardViewModel) {
     currentPhase = .pauseBeforeAnswer
+    updateNowPlayingInfo()
     scheduleAfterDelay(SpeechSettingsManager.loadAnswerDelay()) { [weak self, weak vm] in
       guard let self = self, self.isActive, let vm = vm else { return }
       self.speakAnswer(for: card, vm: vm)
@@ -509,6 +722,7 @@ final class SpeechManager: NSObject, ObservableObject, AVSpeechSynthesizerDelega
 
   private func scheduleNextCard() {
     currentPhase = .pauseBeforeNext
+    updateNowPlayingInfo()
     scheduleAfterDelay(nextCardDelay) { [weak self] in
       guard let self = self, self.isActive, let vm = self.viewModel else { return }
       self.currentPhase = .idle
