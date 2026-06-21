@@ -16,5 +16,5 @@ It turns the USCIS civics questions into a simple flashcard-style review flow, m
 ## Screenshot
 
 <p align="center">
-  <img src="images/screenshot.png" alt="Civics Flash app screenshot" width="50%">
+  <img src="images/screenshot.png" alt="Civics Flash app screenshot" width="200">
 </p>
