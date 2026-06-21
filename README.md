@@ -2,10 +2,11 @@ IOS (iPhone and iPad) App for studying for the U.S. citizenship test.
 
 Flash card style app to help people prepare for the civics portion of the naturalization test given by U.S. Citizenship and Immigration Services (USCIS).
 
+[Cheat sheet](CHEAT_SHEET.md) for amendments, key dates, presidents, and branches of government covered by the questions.
+
 
 https://apps.apple.com/us/app/civics-flash/id6755638748
 
 ## Screenshot
 
 <img src="images/screenshot.png" alt="Civics Flash screenshot" width="50%">
-
